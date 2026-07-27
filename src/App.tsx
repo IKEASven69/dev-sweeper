@@ -67,6 +67,8 @@ export default function App() {
   const [ruleIds, setRuleIds] = useState<string[]>(DEFAULT_RULES);
   const [staleDays, setStaleDays] = useState(90);
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<number | null>(null);
+  const [cancelled, setCancelled] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<SortMode>("size");
@@ -85,7 +87,14 @@ export default function App() {
           prev.map((a) => (a.id === e.payload.id ? { ...a, sizeBytes: e.payload.size } : a)),
         );
       }),
-      listen("scan:done", () => setScanning(false)),
+      listen<{ scannedDirs: number }>("scan:progress", (e) => {
+        setScanProgress(e.payload.scannedDirs);
+      }),
+      listen<{ cancelled: boolean }>("scan:done", (e) => {
+        setScanning(false);
+        setCancelled(e.payload.cancelled);
+        setScanProgress(null);
+      }),
       listen<{ done: number; total: number }>("delete:progress", (e) => {
         setProgress({ done: e.payload.done, total: e.payload.total });
       }),
@@ -114,12 +123,23 @@ export default function App() {
     setArtifacts([]);
     setSelected(new Set());
     setLastReport(null);
+    setCancelled(false);
+    setScanProgress(null);
     setScanning(true);
     try {
       await invoke("scan", { root, ruleIds });
     } catch (e) {
       console.error(e);
       setScanning(false);
+      setScanProgress(null);
+    }
+  }
+
+  async function cancelScan() {
+    try {
+      await invoke("cancel_scan");
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -228,9 +248,27 @@ export default function App() {
             {scanning && (
               <span className="size-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
             )}
-            {scanning ? "扫描中" : "扫描"}
+            {scanning
+              ? scanProgress != null
+                ? `扫描中 · ${scanProgress.toLocaleString()} 目录`
+                : "扫描中"
+              : "扫描"}
           </button>
+          {scanning && (
+            <button
+              onClick={cancelScan}
+              className="px-3 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--critical)] hover:text-[var(--critical)] text-sm text-[var(--ink-2)]"
+            >
+              取消
+            </button>
+          )}
         </div>
+
+        {cancelled && (
+          <div className="text-xs text-[var(--warning)] -mt-1">
+            ⏱ 扫描已取消，显示的是已发现的部分结果（部分大小可能仍为 …，尚未算完）。
+          </div>
+        )}
 
         {/* 统计卡片 */}
         <div className="flex gap-3">
