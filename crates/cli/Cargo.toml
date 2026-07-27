@@ -1,0 +1,14 @@
+[package]
+name = "dev-sweeper-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sweep"
+path = "src/main.rs"
+
+[dependencies]
+dev-sweeper-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+serde_json.workspace = true

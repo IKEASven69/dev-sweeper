@@ -1,0 +1,21 @@
+[package]
+name = "dev-sweeper"
+version.workspace = true
+description = "多生态开发产物扫描清理工具"
+authors = ["you"]
+edition.workspace = true
+
+[lib]
+name = "dev_sweeper_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+dev-sweeper-core = { path = "../crates/core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+html {
+  color-scheme: dark;
+}
+
+:root {
+  /* 暗色图表基底（dataviz 参考调色板） */
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink-1: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --hairline: rgba(255, 255, 255, 0.1);
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --accent: #3987e5;
+  /* 生态系列色（暗面校验过的分类槽位，固定顺序） */
+  --s-node: #3987e5;
+  --s-rust: #d95926;
+  --s-maven: #199e70;
+  --s-gradle: #c98500;
+  --s-python-venv: #d55181;
+  --s-python-cache: #008300;
+  --s-web-dist: #9085e9;
+}
+
+body {
+  background: var(--page);
+  color: var(--ink-1);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.toast-in {
+  animation: toast-in 0.18s ease-out;
+}
