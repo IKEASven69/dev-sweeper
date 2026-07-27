@@ -23,13 +23,13 @@ interface DeleteReport {
 
 /* 分类色按固定槽位顺序分配（dataviz 暗面校验通过的顺序），标签文字不沾系列色 */
 const RULE_META: Record<string, { label: string; color: string; icon: string }> = {
-  node: { label: "node", color: "var(--s-node)", icon: "📦" },
-  rust: { label: "rust", color: "var(--s-rust)", icon: "🦀" },
-  maven: { label: "maven", color: "var(--s-maven)", icon: "☕" },
-  gradle: { label: "gradle", color: "var(--s-gradle)", icon: "🐘" },
-  "python-venv": { label: "venv", color: "var(--s-python-venv)", icon: "🐍" },
-  "python-cache": { label: "pycache", color: "var(--s-python-cache)", icon: "⚡" },
-  "web-dist": { label: "dist", color: "var(--s-web-dist)", icon: "🌐" },
+  node: { label: "Node modules", color: "var(--s-node)", icon: "📦" },
+  rust: { label: "Rust target", color: "var(--s-rust)", icon: "🦀" },
+  maven: { label: "Maven target", color: "var(--s-maven)", icon: "☕" },
+  gradle: { label: "Gradle build", color: "var(--s-gradle)", icon: "🐘" },
+  "python-venv": { label: "Python venv", color: "var(--s-python-venv)", icon: "🐍" },
+  "python-cache": { label: "Python cache", color: "var(--s-python-cache)", icon: "⚡" },
+  "web-dist": { label: "Web dist", color: "var(--s-web-dist)", icon: "🌐" },
 };
 
 const ALL_RULES = Object.keys(RULE_META);
@@ -47,19 +47,6 @@ function EcoIcon({ ruleId, size = "md" }: { ruleId: string; size?: "md" | "lg" }
       }`}
     >
       {meta?.icon ?? "🗂️"}
-    </span>
-  );
-}
-
-function RuleTag({ ruleId }: { ruleId: string }) {
-  const meta = RULE_META[ruleId];
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-2)]">
-      <span
-        className="size-2 rounded-full shrink-0"
-        style={{ background: meta?.color ?? "var(--muted)" }}
-      />
-      {meta?.label ?? ruleId}
     </span>
   );
 }
@@ -292,7 +279,7 @@ export default function App() {
             sub={scanning ? `已发现 ${artifacts.length} 项…` : artifacts.length ? `${artifacts.length} 个产物目录` : "扫描后统计"}
           />
           <StatTile
-            label={`陈旧项目（>${staleDays} 天未动）`}
+            label={`陈旧项目（超 ${staleDays} 天未动）`}
             value={artifacts.length ? String(staleItems.length) : "—"}
             sub={staleItems.length ? `共 ${fmtSize(staleBytes)}，删了最不心疼` : undefined}
             accent={staleItems.length ? "var(--warning)" : undefined}
@@ -322,34 +309,41 @@ export default function App() {
               >
                 <span className="size-2 rounded-full" style={{ background: RULE_META[r].color }} />
                 {RULE_META[r].label}
-                {active && count != null && <span className="text-[var(--muted)]">{count}</span>}
+                {active && count != null && (
+                  <span className="text-[var(--muted)] tabular-nums">{count}</span>
+                )}
               </button>
             );
           })}
           <div className="flex-1" />
-          <label className="text-[var(--muted)] text-xs">
-            陈旧阈值
+          <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
+            <span>陈旧阈值</span>
             <input
               type="number"
               min={1}
+              max={3650}
               value={staleDays}
-              onChange={(e) => setStaleDays(Number(e.target.value) || 90)}
-              className="mx-1.5 w-14 rounded-md bg-[var(--surface)] border border-[var(--hairline)] px-1.5 py-0.5 text-center text-[var(--ink-2)] outline-none"
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setStaleDays(n >= 1 && n <= 3650 ? n : 90);
+              }}
+              className="w-16 rounded-md bg-[var(--surface)] border border-[var(--hairline)] focus:border-[var(--accent)] px-2 py-0.5 text-center text-[var(--ink-2)] outline-none tabular-nums"
             />
-            天
-          </label>
+            <span>天未动</span>
+          </div>
         </div>
       </header>
 
       {/* 操作条 */}
       {artifacts.length > 0 && (
-        <div className="flex items-center gap-4 px-6 pb-2 text-sm">
+        <div className="flex items-center gap-3 px-6 pb-2 text-sm">
           {staleItems.length > 0 && (
             <button
               onClick={() => setSelected(new Set(staleItems.map((a) => a.id)))}
-              className="text-[var(--warning)] hover:underline text-xs inline-flex items-center gap-1"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--hairline)] hover:border-[var(--warning)] hover:text-[var(--warning)] text-xs text-[var(--ink-2)] transition-colors"
+              title={`勾选所有超过 ${staleDays} 天未活跃的产物`}
             >
-              ⏱ 全选 {staleItems.length} 个陈旧项
+              ⏱ 全选 {staleItems.length} 个陈旧项（{fmtSize(staleBytes)}）
             </button>
           )}
           <div className="flex-1" />
@@ -530,12 +524,17 @@ export default function App() {
             </div>
             <div className="flex-1 overflow-auto px-5 py-3 text-sm space-y-2">
               {selectedItems.map((a) => (
-                <div key={a.id} className="flex items-baseline gap-3">
-                  <RuleTag ruleId={a.ruleId} />
-                  <span className="text-[var(--ink-2)] truncate flex-1" title={a.path}>
-                    {a.path}
-                  </span>
-                  <span className="text-[var(--muted)] text-xs whitespace-nowrap">
+                <div key={a.id} className="flex items-center gap-3">
+                  <EcoIcon ruleId={a.ruleId} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[var(--ink-1)] truncate" title={a.path}>
+                      {a.projectName}
+                    </div>
+                    <div className="text-xs text-[var(--muted)] truncate" title={a.path}>
+                      {a.path}
+                    </div>
+                  </div>
+                  <span className="text-[var(--muted)] text-xs whitespace-nowrap shrink-0">
                     {a.regenHint}
                   </span>
                 </div>
