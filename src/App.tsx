@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { daysAgo, fmtDaysAgo, fmtSize } from "./lib/format";
+import { daysAgo, fmtDaysAgo, fmtDuration, fmtSize } from "./lib/format";
 
 interface Artifact {
   id: number;
@@ -70,6 +70,7 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<number | null>(null);
   const [cancelled, setCancelled] = useState(false);
+  const [lastElapsedMs, setLastElapsedMs] = useState<number | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<SortMode>("size");
@@ -91,9 +92,10 @@ export default function App() {
       listen<{ scannedDirs: number }>("scan:progress", (e) => {
         setScanProgress(e.payload.scannedDirs);
       }),
-      listen<{ cancelled: boolean }>("scan:done", (e) => {
+      listen<{ cancelled: boolean; elapsedMs: number }>("scan:done", (e) => {
         setScanning(false);
         setCancelled(e.payload.cancelled);
+        setLastElapsedMs(e.payload.elapsedMs);
         setScanProgress(null);
       }),
       listen<{ done: number; total: number }>("delete:progress", (e) => {
@@ -111,6 +113,33 @@ export default function App() {
     return () => clearTimeout(t);
   }, [lastReport]);
 
+  // 全局键盘：Esc 关弹窗/取消扫描，Ctrl/Cmd+A 全选产物
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // Esc：优先关确认弹窗，否则取消进行中的扫描
+      if (e.key === "Escape") {
+        if (confirming) {
+          if (!deleting) setConfirming(false);
+          e.preventDefault();
+        } else if (scanning) {
+          cancelScan();
+          e.preventDefault();
+        }
+        return;
+      }
+      // Ctrl/Cmd+A：全选产物（避免在输入框里触发浏览器默认全选）
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        const el = e.target as HTMLElement;
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || confirming) return;
+        if (artifacts.length === 0) return;
+        e.preventDefault();
+        setSelected(new Set(artifacts.map((a) => a.id)));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirming, deleting, scanning, artifacts.length]);
+
   async function pickDir() {
     const dir = await open({ directory: true, defaultPath: root || undefined });
     if (typeof dir === "string") {
@@ -125,6 +154,7 @@ export default function App() {
     setSelected(new Set());
     setLastReport(null);
     setCancelled(false);
+    setLastElapsedMs(null);
     setScanProgress(null);
     setScanning(true);
     try {
@@ -290,6 +320,11 @@ export default function App() {
             sub={selected.size ? `${selected.size} 项待清理` : "勾选后可移入回收站"}
             accent={selected.size ? "var(--accent)" : undefined}
           />
+          <StatTile
+            label="上次扫描耗时"
+            value={lastElapsedMs != null ? fmtDuration(lastElapsedMs) : "—"}
+            sub={cancelled ? "已取消（部分结果）" : lastElapsedMs != null ? "完整扫描" : undefined}
+          />
         </div>
 
         {/* 生态过滤 + 阈值 */}
@@ -404,6 +439,10 @@ export default function App() {
                 >
                   按活跃度 {sort === "stale" && "▾"}
                 </button>
+                <span className="text-[var(--grid)]">·</span>
+                <kbd className="text-[10px] px-1 py-0.5 rounded border border-[var(--grid)] text-[var(--muted)]">
+                  Ctrl+A 全选
+                </kbd>
               </div>
 
               {/* 行列表 */}

@@ -23,3 +23,14 @@ export function fmtDaysAgo(lastActiveMs: number | null | undefined): string {
   if (d < 365) return `${Math.floor(d / 30)} 个月前`;
   return `${(d / 365).toFixed(1)} 年前`;
 }
+
+/** 毫秒时长格式化为人类可读：<1s 显示毫秒，否则 s，>=60s 显示 m:ss。 */
+export function fmtDuration(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(totalSec < 10 ? 1 : 0)} s`;
+  const m = Math.floor(totalSec / 60);
+  const s = Math.round(totalSec % 60);
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
