@@ -159,7 +159,7 @@ pub struct CleanRule {
 
 **为什么 marker 必要**：`target` 既是 Rust 又是 Maven 产物；任意目录都可能叫 `build`/`env`/`dist`。纯名匹配（npkill 的做法）在多生态下误报率高。marker 确认把"这是真产物"的把握从"名字对"提到"名字对 + 上下文对"。
 
-**现状规则（7 类，default_on 标 ✱）**：
+**现状规则（18 类，default_on 标 ✱）**：
 
 | id | dir_names | marker | regen_hint | 默认 |
 |---|---|---|---|---|
@@ -169,7 +169,19 @@ pub struct CleanRule {
 | gradle | `build`, `.gradle` | ParentHas `[build.gradle(.kts), settings.gradle(.kts)]` | `gradle build` | ✱ |
 | python-venv | `.venv`, `venv`, `env` | SelfHas `pyvenv.cfg` | `python -m venv / uv sync` | ✱ |
 | python-cache | `__pycache__`, `.pytest_cache` | None | `运行时自动再生` | ✱ |
+| cmake | `build`, `cmake-build-*` | ParentHas `[CMakeLists.txt]` | `cmake --build` | ✱ |
+| dotnet | `bin`, `obj` | ParentHasSuffix `[.csproj/.fsproj/.vbproj]` | `dotnet build` | ✱ |
+| composer | `vendor` | ParentHas `[composer.json]` | `composer install` | ✱ |
+| unity | `Library`, `Temp`, `Obj`, `Logs`, `MemoryCaptures` | ParentHas `[Assembly-CSharp.csproj]` | Unity 打开自动再生 | ✱ |
+| unreal | `Binaries`, `Intermediate`, `DerivedDataCache`, `Saved` | ParentHasSuffix `[.uproject]` | Unreal 打开自动再生 | ✱ |
+| godot | `.godot` | ParentHas `[project.godot]` | Godot 打开自动再生 | ✱ |
+| swift | `.build`, `.swiftpm` | ParentHas `[Package.swift]` | `swift build` | ✱ |
+| zig | `zig-cache`, `.zig-cache`, `zig-out` | ParentHas `[build.zig]` | `zig build` | ✱ |
+| elixir | `_build`, `.elixir-ls` | ParentHas `[mix.exs]` | `mix compile` | ✱ |
+| cocoapods | `Pods` | ParentHas `[Podfile]` | `pod install` | ✱ |
 | web-dist | `.next`, `dist` | ParentHas `[package.json]` | `npm run build` | 关 |
+
+> **Marker 新增 `ParentHasSuffix`**：处理文件名不固定的标记（Unreal 的 `*.uproject`、.NET 的 `*.csproj`）——父目录含指定**后缀**的文件即确认。通用目录名（`bin`/`obj`/`build`/`vendor`/`Library`/`Temp`）一律要求 marker 确认，杜绝误伤同名目录。
 
 #### 4.1.1 同名目录冲突处理
 
@@ -337,13 +349,14 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [x] **dry-run 模式**：`sweep clean -n` / `delete_to_trash_dry_run`（借鉴 kondo `-n`、npkill `--dry-run`）。
 - [x] **trash-only 显式语义**：`delete.rs` 顶部文档注释写死安全不变量——只走 `trash::delete`，无 `remove_dir_all` 路径，不提供"永久删除"开关。
 
-### P1 — 扩生态广度（对标 kondo 25 类 / ClearDisk 23 项目类型）
-- [ ] CMake（`build`, `cmake-build-*`，marker `CMakeLists.txt`）
-- [ ] .NET（`bin`, `obj`，marker `.csproj`/`.fsproj`）
-- [ ] Unity（`Library`, `Temp`, `Logs`…，marker `Assembly-CSharp.csproj`）
-- [ ] Unreal（`Binaries`, `Intermediate`, `DerivedDataCache`，suffix `.uproject`）
-- [ ] Composer（`vendor`，marker `composer.json`）
-- [ ] Go build 产物、Swift `.build`、Zig `zig-cache`、Elixir `_build`
+### P1 — 扩生态广度（已交付，18 类）
+- [x] CMake（`build`, `cmake-build-*`，marker `CMakeLists.txt`）
+- [x] .NET（`bin`, `obj`，marker `.csproj`/`.fsproj`/`.vbproj` **后缀**）
+- [x] Unity（`Library`, `Temp`, `Obj`, `Logs`, `MemoryCaptures`，marker `Assembly-CSharp.csproj`）
+- [x] Unreal（`Binaries`, `Intermediate`, `DerivedDataCache`, `Saved`，**suffix** `.uproject`）
+- [x] Composer（`vendor`，marker `composer.json`）
+- [x] Godot（`.godot`，marker `project.godot`）、Swift（`.build`/`.swiftpm`，`Package.swift`）、Zig（`zig-cache`/`.zig-cache`/`zig-out`，`build.zig`）、Elixir（`_build`/`.elixir-ls`，`mix.exs`）、CocoaPods（`Pods`，`Podfile`）
+- [x] **Marker 扩 `ParentHasSuffix`**：处理文件名不固定的标记（.uproject/.csproj）
 - [ ] 规则表加 `risk: Risk`（🟢🟡🔴）字段，UI 着色（借鉴 ClearDisk，强化"哪些最安全删"）。
 
 ### P2 — 增强信任与精度
@@ -398,7 +411,7 @@ dev-sweeper/
 | **规则表驱动** | 加生态零分支，单测易写。 |
 | **React 19 + Tailwind v4** | 现代前端，CSS 变量驱动的暗色 dataviz 调色板。 |
 
-## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 16 测 + 1 unix-only）
+## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 20 测 + 1 unix-only）
 
 | 测试 | 守住的属性 |
 |---|---|
@@ -420,3 +433,7 @@ dev-sweeper/
 | `compute_sizes_skips_when_cancelled` | 取消后 size 计算跳过 |
 | `does_not_follow_symlinks` (unix) | 不 follow symlink |
 | `delete_rejects_symlink_target` (unix) | **TOCTOU：删除目标本身是 symlink → 拒绝** |
+| `cmake_build_requires_cmakelists` | CMake 的 build 靠 CMakeLists.txt 确认（P1） |
+| `dotnet_bin_obj_requires_csproj` | .NET bin/obj 靠 .csproj 后缀确认（P1，suffix marker） |
+| `unreal_uses_suffix_marker` | Unreal 靠 .uproject 后缀确认（P1，suffix marker） |
+| `generic_dir_without_marker_not_matched` | 通用名目录无 marker 一律不误判（P1 回归） |

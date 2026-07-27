@@ -26,6 +26,17 @@ html {
   --s-python-venv: #d55181;
   --s-python-cache: #008300;
   --s-web-dist: #9085e9;
+  /* P1 扩展生态 */
+  --s-cmake: #3b8fd9;
+  --s-dotnet: #8a6fe8;
+  --s-composer: #5f9bd8;
+  --s-unity: #9b9b9b;
+  --s-unreal: #1f7ae0;
+  --s-godot: #5fc4f0;
+  --s-swift: #f37338;
+  --s-zig: #f0a020;
+  --s-elixir: #8b5cf6;
+  --s-cocoapods: #e23744;
 }
 
 body {

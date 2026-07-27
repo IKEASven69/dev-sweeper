@@ -108,7 +108,8 @@ fn scan_and_size(path: &Path, rule_ids: &[String], stale_days: Option<u64>) -> V
             .collect();
         for id in rule_ids {
             if !known.contains(id.as_str()) {
-                eprintln!("warning: 未知规则 id「{id}」（已忽略）。已知: node, rust, maven, gradle, python-venv, python-cache, web-dist");
+                let all_ids: Vec<&str> = dev_sweeper_core::RULES.iter().map(|r| r.id).collect();
+                eprintln!("warning: 未知规则 id「{id}」（已忽略）。已知: {}", all_ids.join(", "));
             }
         }
     }

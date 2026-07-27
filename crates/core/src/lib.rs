@@ -77,6 +77,79 @@ mod tests {
     }
 
     #[test]
+    fn cmake_build_requires_cmakelists() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 有 CMakeLists.txt → cmake 命中
+        touch(&tmp.path().join("cm/CMakeLists.txt"), "cmake_minimum_required");
+        touch(&tmp.path().join("cm/build/a.o"), "x");
+        // 裸 build 无 marker → 不命中（build 是通用名，必须确认）
+        touch(&tmp.path().join("bare/build/x"), "x");
+
+        let found = scan_all(tmp.path());
+        let cm = found.iter().find(|a| a.rule_id == "cmake").unwrap();
+        // 末段是 build（跨平台：用 components 而非字符串 ends_with，避免分隔符差异）
+        assert_eq!(
+            std::path::Path::new(&cm.path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "build"
+        );
+        // 裸 build 不应出现
+        assert!(found.iter().all(|a| !a.path.ends_with("bare/build")));
+    }
+
+    #[test]
+    fn dotnet_bin_obj_requires_csproj() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/app.csproj"), "<Project/>");
+        touch(&tmp.path().join("app/bin/app.dll"), "x");
+        touch(&tmp.path().join("app/obj/x"), "x");
+        // 没有 .csproj 的 bin → 不命中（bin 是极通用名）
+        touch(&tmp.path().join("other/bin/script.sh"), "x");
+
+        let found = scan_all(tmp.path());
+        let dotnet_count = found
+            .iter()
+            .filter(|a| a.path.contains("app") && a.rule_id == "dotnet")
+            .count();
+        assert_eq!(dotnet_count, 2, "app 下应识别 bin + obj 两个 dotnet");
+        assert!(found.iter().all(|a| !a.path.ends_with("other/bin")));
+    }
+
+    #[test]
+    fn unreal_uses_suffix_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Unreal 项目文件名不固定，靠 .uproject 后缀识别
+        touch(&tmp.path().join("game/MyGame.uproject"), "{}");
+        touch(&tmp.path().join("game/Binaries/x"), "x");
+        touch(&tmp.path().join("game/Intermediate/y"), "x");
+        // 没有 .uproject 的 Binaries → 不命中
+        touch(&tmp.path().join("other/Binaries/z"), "x");
+
+        let found = scan_all(tmp.path());
+        let unreal: Vec<_> = found.iter().filter(|a| a.rule_id == "unreal").collect();
+        assert_eq!(unreal.len(), 2, "应识别 game 下 Binaries + Intermediate");
+        assert!(found.iter().all(|a| !a.path.contains("other")));
+    }
+
+    #[test]
+    fn generic_dir_without_marker_not_matched() {
+        // 综合回归：Library/Temp/Logs(unity) / Pods(cocoapods) / vendor(composer)
+        // 这些通用名在没有对应 marker 时一律不命中
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["Library", "Temp", "Logs", "Pods", "vendor", "Binaries"] {
+            touch(&tmp.path().join(format!("bare/{name}/x")), "x");
+        }
+        let found = scan_all(tmp.path());
+        assert!(
+            found.is_empty(),
+            "无 marker 的通用名目录不应被命中，实际: {:?}",
+            found.iter().map(|a| &a.rule_id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn does_not_descend_into_matched_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("app/package.json"), "{}");

@@ -29,6 +29,16 @@ const RULE_META: Record<string, { label: string; color: string; icon: string }> 
   gradle: { label: "Gradle build", color: "var(--s-gradle)", icon: "🐘" },
   "python-venv": { label: "Python venv", color: "var(--s-python-venv)", icon: "🐍" },
   "python-cache": { label: "Python cache", color: "var(--s-python-cache)", icon: "⚡" },
+  cmake: { label: "CMake build", color: "var(--s-cmake)", icon: "🔧" },
+  dotnet: { label: ".NET bin/obj", color: "var(--s-dotnet)", icon: "🔷" },
+  composer: { label: "Composer vendor", color: "var(--s-composer)", icon: "🎼" },
+  unity: { label: "Unity cache", color: "var(--s-unity)", icon: "🎮" },
+  unreal: { label: "Unreal cache", color: "var(--s-unreal)", icon: "🎯" },
+  godot: { label: "Godot cache", color: "var(--s-godot)", icon: "🤖" },
+  swift: { label: "Swift build", color: "var(--s-swift)", icon: "🕊️" },
+  zig: { label: "Zig cache", color: "var(--s-zig)", icon: "🟧" },
+  elixir: { label: "Elixir _build", color: "var(--s-elixir)", icon: "💧" },
+  cocoapods: { label: "CocoaPods", color: "var(--s-cocoapods)", icon: "🌱" },
   "web-dist": { label: "Web dist", color: "var(--s-web-dist)", icon: "🌐" },
 };
 

@@ -7,6 +7,8 @@ use std::path::Path;
 pub enum Marker {
     /// 父目录含任一标记文件才命中
     ParentHas(&'static [&'static str]),
+    /// 父目录含任一**指定后缀**的文件才命中（如 Unreal 的 .uproject）
+    ParentHasSuffix(&'static [&'static str]),
     /// 目录自身含标记文件才命中（如 venv 的 pyvenv.cfg）
     SelfHas(&'static str),
     /// 无需确认
@@ -69,6 +71,78 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["__pycache__", ".pytest_cache"],
         marker: Marker::None,
         regen_hint: "运行时自动再生",
+        default_on: true,
+    },
+    CleanRule {
+        id: "cmake",
+        dir_names: &["build", "cmake-build-debug", "cmake-build-release"],
+        marker: Marker::ParentHas(&["CMakeLists.txt"]),
+        regen_hint: "cmake --build",
+        default_on: true,
+    },
+    CleanRule {
+        id: "dotnet",
+        // bin/obj 是通用名，必须靠 .csproj/.fsproj/.vbproj 确认，否则误伤。
+        // 这些是后缀（app.csproj），不是固定文件名 → 用 ParentHasSuffix。
+        dir_names: &["bin", "obj"],
+        marker: Marker::ParentHasSuffix(&[".csproj", ".fsproj", ".vbproj"]),
+        regen_hint: "dotnet build",
+        default_on: true,
+    },
+    CleanRule {
+        id: "composer",
+        dir_names: &["vendor"],
+        marker: Marker::ParentHas(&["composer.json"]),
+        regen_hint: "composer install",
+        default_on: true,
+    },
+    CleanRule {
+        id: "unity",
+        dir_names: &["Library", "Temp", "Obj", "Logs", "MemoryCaptures"],
+        marker: Marker::ParentHas(&["Assembly-CSharp.csproj"]),
+        regen_hint: "Unity 编辑器打开时自动再生",
+        default_on: true,
+    },
+    CleanRule {
+        id: "unreal",
+        dir_names: &["Binaries", "Intermediate", "DerivedDataCache", "Saved"],
+        marker: Marker::ParentHasSuffix(&[".uproject"]),
+        regen_hint: "Unreal 编辑器打开时自动再生",
+        default_on: true,
+    },
+    CleanRule {
+        id: "godot",
+        dir_names: &[".godot"],
+        marker: Marker::ParentHas(&["project.godot"]),
+        regen_hint: "Godot 编辑器打开时自动再生",
+        default_on: true,
+    },
+    CleanRule {
+        id: "swift",
+        dir_names: &[".build", ".swiftpm"],
+        marker: Marker::ParentHas(&["Package.swift"]),
+        regen_hint: "swift build",
+        default_on: true,
+    },
+    CleanRule {
+        id: "zig",
+        dir_names: &["zig-cache", ".zig-cache", "zig-out"],
+        marker: Marker::ParentHas(&["build.zig"]),
+        regen_hint: "zig build",
+        default_on: true,
+    },
+    CleanRule {
+        id: "elixir",
+        dir_names: &["_build", ".elixir-ls"],
+        marker: Marker::ParentHas(&["mix.exs"]),
+        regen_hint: "mix compile",
+        default_on: true,
+    },
+    CleanRule {
+        id: "cocoapods",
+        dir_names: &["Pods"],
+        marker: Marker::ParentHas(&["Podfile"]),
+        regen_hint: "pod install",
         default_on: true,
     },
     CleanRule {
@@ -155,6 +229,22 @@ pub(crate) fn marker_ok(rule: &CleanRule, path: &Path) -> bool {
         Marker::ParentHas(markers) => path
             .parent()
             .is_some_and(|p| markers.iter().any(|m| p.join(m).is_file())),
+        Marker::ParentHasSuffix(suffixes) => {
+            path.parent().is_some_and(|p| {
+                // 父目录存在且含任一指定后缀的文件（读目录；失败则当作不命中）
+                std::fs::read_dir(p)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                            .any(|e| {
+                                suffixes.iter().any(|sfx| {
+                                    e.file_name().to_string_lossy().ends_with(sfx)
+                                })
+                            })
+                    })
+                    .unwrap_or(false)
+            })
+        }
         Marker::SelfHas(marker) => path.join(marker).is_file(),
         Marker::None => true,
     }
@@ -166,6 +256,10 @@ fn marker_desc(marker: Marker) -> String {
         Marker::ParentHas(ms) => {
             let list = ms.join(" / ");
             format!("父目录标记 {list}")
+        }
+        Marker::ParentHasSuffix(sfxs) => {
+            let list = sfxs.join(" / ");
+            format!("父目录含后缀 {list} 的文件")
         }
         Marker::SelfHas(m) => format!("目录内 {m}"),
         Marker::None => "（无标记）".into(),
