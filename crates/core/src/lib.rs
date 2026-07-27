@@ -2,8 +2,10 @@ pub mod delete;
 pub mod rules;
 pub mod scan;
 
-pub use delete::{delete_to_trash, validate_artifact_path};
-pub use rules::{select_rules, CleanRule, Marker, RULES};
+pub use delete::{delete_to_trash, delete_to_trash_dry_run, validate_artifact_path};
+pub use rules::{
+    known_dir_names, rule_for_dir_name, select_rules, validate_marker, CleanRule, Marker, RULES,
+};
 pub use scan::{compute_sizes, dir_size, scan_artifacts, Artifact};
 
 #[cfg(test)]
@@ -123,9 +125,62 @@ mod tests {
 
     #[test]
     fn delete_rejects_non_artifact_path() {
+        // 末段不是任何规则的产物名 → 拒绝
         assert!(validate_artifact_path(Path::new("C:/Users/me/Documents")).is_err());
-        assert!(validate_artifact_path(Path::new("C:/proj/node_modules")).is_ok());
-        assert!(validate_artifact_path(Path::new("C:/proj/target")).is_ok());
+    }
+
+    #[test]
+    fn delete_rejects_known_name_without_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 裸 node_modules（父目录无 package.json）→ 名字对但 marker 未确认 → 拒绝
+        touch(&tmp.path().join("bare/node_modules/pkg/index.js"), "x");
+        assert!(validate_artifact_path(&tmp.path().join("bare/node_modules")).is_err());
+
+        // 裸 target（无 Cargo.toml/pom.xml）→ 同理拒绝
+        touch(&tmp.path().join("bare/target/debug/x.bin"), "x");
+        assert!(validate_artifact_path(&tmp.path().join("bare/target")).is_err());
+    }
+
+    #[test]
+    fn validate_marker_accepts_with_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        // node：父目录有 package.json → 通过
+        touch(&tmp.path().join("app/package.json"), "{}");
+        touch(&tmp.path().join("app/node_modules/a.js"), "x");
+        assert!(validate_marker(&tmp.path().join("app/node_modules")).is_ok());
+
+        // rust target：父目录有 Cargo.toml → 通过
+        touch(&tmp.path().join("rs/Cargo.toml"), "[package]");
+        touch(&tmp.path().join("rs/target/debug/bin"), "x");
+        assert!(validate_marker(&tmp.path().join("rs/target")).is_ok());
+
+        // venv：目录内含 pyvenv.cfg（SelfHas）→ 通过
+        touch(&tmp.path().join("py/.venv/pyvenv.cfg"), "home = x");
+        assert!(validate_marker(&tmp.path().join("py/.venv")).is_ok());
+
+        // python-cache：Marker::None，名字对即通过
+        touch(&tmp.path().join("py/src/__pycache__/c.pyc"), "x");
+        assert!(validate_marker(&tmp.path().join("py/src/__pycache__")).is_ok());
+    }
+
+    #[test]
+    fn dry_run_validates_but_does_not_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/package.json"), "{}");
+        let nm = tmp.path().join("app/node_modules");
+        touch(&nm.join("a.js"), "x");
+
+        // 预演：校验通过，但目录原封不动
+        assert!(delete_to_trash_dry_run(&nm).is_ok());
+        assert!(nm.join("a.js").exists(), "dry-run 不应删除任何文件");
+    }
+
+    #[test]
+    fn dry_run_rejects_without_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("bare/node_modules/a.js"), "x");
+        // 无 marker → dry-run 也应拒绝（校验先行）
+        assert!(delete_to_trash_dry_run(&tmp.path().join("bare/node_modules")).is_err());
     }
 
     #[cfg(unix)]

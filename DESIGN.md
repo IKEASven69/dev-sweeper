@@ -259,11 +259,13 @@ pub fn delete_to_trash(path: &Path) -> Result<(), String>          // 闸二（�
 
 **闸二：一律 `trash::delete`**，永不 `remove_dir_all`。这是与 kondo/npkill 的根本区别，也是头号卖点。
 
-#### 4.3.1 已知的设计弱点（需在路线图修复）
+#### 4.3.1 删除前 marker 重校验（已实现）
 
-⚠️ **`validate_artifact_path` 只校验末段，不重新跑 marker 确认。** 也就是说外部直接调 `delete_to_trash("C:/任意目录/node_modules")` 能过校验——只要末段叫 `node_modules`。GUI/CLI 走的是"先 scan 拿到真 Artifact 路径再删"的流程，所以**实践中安全**；但作为公共 `core` API，这层校验偏弱。
+删除前用 `validate_marker(path)`：取路径末段 → 反查规则（`rule_for_dir_name`）→ 重跑该规则的 marker 检查。与扫描时 `scan::match_rule` 走相同判定逻辑，使 `core` 公共 API 自洽——即使外部绕过 scan 直接调 `delete_to_trash`，也会拒绝"名字对、无 marker"的目录。
 
-**修复方向**：删除前用 path 反推 rule 并重跑 marker 检查（或缓存 scan 时的 marker 命中结果随 path 一并传入）。详见 §6 路线图。
+- `validate_marker` 返回 `Result<&CleanRule, String>`：成功时带回命中的规则（供调用方附加信息），失败时返回可读的拒绝原因（含缺失的 marker 描述）。
+- 预演函数 `delete_to_trash_dry_run`：同样先过 `validate_marker` + 存在性检查，但不调用 `trash::delete`。
+- 单测覆盖：`validate_marker_accepts_with_marker`（node/rust/venv/cache 四类正向）、`delete_rejects_known_name_without_marker`（裸 node_modules / 裸 target 被拒）、`dry_run_validates_but_does_not_delete`、`dry_run_rejects_without_marker`。
 
 ### 4.4 CLI（`crates/cli/src/main.rs`）
 
@@ -315,7 +317,8 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 | **不 follow symlink** | 防软链环与重复计数 | `walkdir(follow_links(false))` |
 | **无权限容错** | 遍历错误静默跳过，不中断扫描 | `scan.rs` `Err(_) => continue` |
 | **删除前二次确认** | GUI 弹窗 + CLI `confirm()` | `App.tsx` / `cli/main.rs` |
-| **待加固** | marker 重校验（见 4.3.1） | 路线图 |
+| **路径白名单（名+marker）** | 删除前 `validate_marker` 反查规则并重跑 marker | `rules.rs::validate_marker` → `delete.rs` |
+| **预演不执行** | `delete_to_trash_dry_run` / `sweep clean -n` | `delete.rs` / `cli/main.rs` |
 
 ---
 
@@ -323,10 +326,10 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 
 按"巩固差异化 → 扩生态 → 增强信任"排序。
 
-### P0 — 巩固核心差异化（近期）
-- [ ] **删除前 marker 重校验**：修 §4.3.1 的弱点，让 `core` 公共 API 自洽。
-- [ ] **dry-run 模式**：`sweep clean --dry-run` / GUI "预览"（借鉴 kondo `-n`、npkill `--dry-run`）。
-- [ ] **`--trash-only` 显式语义**：即使未来加高级选项，回收站仍是不可关闭的默认（区别于竞品的"可选 trash"）。
+### P0 — 巩固核心差异化（已交付）
+- [x] **删除前 marker 重校验**：`validate_marker` 反查规则 + 重跑 marker（见 §4.3.1），修了原"只校验末段"的弱点。
+- [x] **dry-run 模式**：`sweep clean -n` / `delete_to_trash_dry_run`（借鉴 kondo `-n`、npkill `--dry-run`）。
+- [x] **trash-only 显式语义**：`delete.rs` 顶部文档注释写死安全不变量——只走 `trash::delete`，无 `remove_dir_all` 路径，不提供"永久删除"开关。
 
 ### P1 — 扩生态广度（对标 kondo 25 类 / ClearDisk 23 项目类型）
 - [ ] CMake（`build`, `cmake-build-*`，marker `CMakeLists.txt`）
@@ -389,7 +392,7 @@ dev-sweeper/
 | **规则表驱动** | 加生态零分支，单测易写。 |
 | **React 19 + Tailwind v4** | 现代前端，CSS 变量驱动的暗色 dataviz 调色板。 |
 
-## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 9 测）
+## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 13 测）
 
 | 测试 | 守住的属性 |
 |---|---|
@@ -401,5 +404,9 @@ dev-sweeper/
 | `skips_git_dir` | 跳过 .git |
 | `dir_size_sums_files` | 大小累加正确 |
 | `compute_sizes_fills_and_reports` | 流式 size 回调 |
-| `delete_rejects_non_artifact_path` | 路径白名单 |
+| `delete_rejects_non_artifact_path` | 末段非产物名 → 拒绝 |
+| `delete_rejects_known_name_without_marker` | **名字对但无 marker → 拒绝**（P0-1） |
+| `validate_marker_accepts_with_marker` | node/rust/venv/cache 四类正向通过（P0-1） |
+| `dry_run_validates_but_does_not_delete` | 预演校验通过且不删（P0-2） |
+| `dry_run_rejects_without_marker` | 预演对无 marker 路径也拒绝（P0-2） |
 | `does_not_follow_symlinks` (unix) | 不 follow symlink |

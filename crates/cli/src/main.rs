@@ -42,6 +42,9 @@ enum Cmd {
         /// 跳过确认
         #[arg(long, short = 'y')]
         yes: bool,
+        /// 预演：只校验不执行，显示"本会移入回收站"的清单
+        #[arg(long, short = 'n')]
+        dry_run: bool,
     },
 }
 
@@ -55,13 +58,17 @@ fn main() {
                 print_table(&artifacts);
             }
         }
-        Cmd::Clean { path, rules, stale_days, yes } => {
+        Cmd::Clean { path, rules, stale_days, yes, dry_run } => {
             let artifacts = scan_and_size(&path, &rules, stale_days);
             if artifacts.is_empty() {
                 println!("没有可清理的产物。");
                 return;
             }
             print_table(&artifacts);
+            if dry_run {
+                run_dry_run(&artifacts);
+                return;
+            }
             if !yes && !confirm(artifacts.len()) {
                 println!("已取消。");
                 return;
@@ -97,6 +104,32 @@ fn scan_and_size(path: &Path, rule_ids: &[String], stale_days: Option<u64>) -> V
     }
     artifacts.sort_by_key(|a| std::cmp::Reverse(a.size_bytes.unwrap_or(0)));
     artifacts
+}
+
+/// dry-run：对每条产物跑 marker + 存在性校验，不真正删除。
+/// 统计"可移入回收站"的项数与体积，并列出被校验拒绝的项。
+fn run_dry_run(artifacts: &[Artifact]) {
+    use dev_sweeper_core::delete_to_trash_dry_run;
+    let mut would_free = 0u64;
+    let mut would_delete = 0usize;
+    let mut rejected = Vec::new();
+    for a in artifacts {
+        match delete_to_trash_dry_run(Path::new(&a.path)) {
+            Ok(()) => {
+                would_free += a.size_bytes.unwrap_or(0);
+                would_delete += 1;
+            }
+            Err(e) => rejected.push((a.path.clone(), e)),
+        }
+    }
+    println!("\n[dry-run] 本会移入回收站 {would_delete} 项，释放 {}", fmt_size(would_free));
+    println!("[dry-run] 实际未删除任何内容。");
+    if !rejected.is_empty() {
+        eprintln!("\n[dry-run] {} 项未通过校验：", rejected.len());
+        for (p, e) in &rejected {
+            eprintln!("  {p}  → {e}");
+        }
+    }
 }
 
 fn print_table(artifacts: &[Artifact]) {

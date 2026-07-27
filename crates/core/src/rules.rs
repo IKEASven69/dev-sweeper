@@ -1,5 +1,7 @@
 //! 清理规则表：加生态 = 加一行规则。
 
+use std::path::Path;
+
 /// 标记确认方式，防止误删同名目录（如无 Cargo.toml/pom.xml 的裸 target）。
 #[derive(Clone, Copy, Debug)]
 pub enum Marker {
@@ -90,4 +92,50 @@ pub fn select_rules(ids: &[String]) -> Vec<&'static CleanRule> {
 /// 所有规则覆盖的目录名，用于删除前校验。
 pub fn known_dir_names() -> Vec<&'static str> {
     RULES.iter().flat_map(|r| r.dir_names.iter().copied()).collect()
+}
+
+/// 末段命中任一规则返回该规则（取表内第一条），用于删除前反查。
+pub fn rule_for_dir_name(name: &str) -> Option<&'static CleanRule> {
+    RULES.iter().find(|r| r.dir_names.contains(&name))
+}
+
+/// 对给定路径重跑 marker 确认：路径末段命中规则 + 该规则的 marker 仍成立。
+///
+/// 与扫描时 `scan::match_rule` 走相同的判定逻辑，使删除前的校验自洽——
+/// 即使外部绕过 scan 直接调 `delete_to_trash`，也不会删掉"同名但无 marker"的目录。
+pub fn validate_marker(path: &Path) -> Result<&'static CleanRule, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("无效路径: {}", path.display()))?;
+    let rule = rule_for_dir_name(&name)
+        .ok_or_else(|| format!("拒绝删除非产物目录: {}", path.display()))?;
+    let ok = match rule.marker {
+        Marker::ParentHas(markers) => path
+            .parent()
+            .is_some_and(|p| markers.iter().any(|m| p.join(m).is_file())),
+        Marker::SelfHas(marker) => path.join(marker).is_file(),
+        Marker::None => true,
+    };
+    if ok {
+        Ok(rule)
+    } else {
+        Err(format!(
+            "目录名命中但 marker 未确认，拒绝删除: {}（缺少 {}）",
+            path.display(),
+            marker_desc(rule.marker)
+        ))
+    }
+}
+
+/// 生成可读的 marker 描述，用于错误信息。
+fn marker_desc(marker: Marker) -> String {
+    match marker {
+        Marker::ParentHas(ms) => {
+            let list = ms.join(" / ");
+            format!("父目录标记 {list}")
+        }
+        Marker::SelfHas(m) => format!("目录内 {m}"),
+        Marker::None => "（无标记）".into(),
+    }
 }
