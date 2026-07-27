@@ -22,20 +22,34 @@ interface DeleteReport {
 }
 
 /* 分类色按固定槽位顺序分配（dataviz 暗面校验通过的顺序），标签文字不沾系列色 */
-const RULE_META: Record<string, { label: string; color: string }> = {
-  node: { label: "node", color: "var(--s-node)" },
-  rust: { label: "rust", color: "var(--s-rust)" },
-  maven: { label: "maven", color: "var(--s-maven)" },
-  gradle: { label: "gradle", color: "var(--s-gradle)" },
-  "python-venv": { label: "venv", color: "var(--s-python-venv)" },
-  "python-cache": { label: "pycache", color: "var(--s-python-cache)" },
-  "web-dist": { label: "dist", color: "var(--s-web-dist)" },
+const RULE_META: Record<string, { label: string; color: string; icon: string }> = {
+  node: { label: "node", color: "var(--s-node)", icon: "📦" },
+  rust: { label: "rust", color: "var(--s-rust)", icon: "🦀" },
+  maven: { label: "maven", color: "var(--s-maven)", icon: "☕" },
+  gradle: { label: "gradle", color: "var(--s-gradle)", icon: "🐘" },
+  "python-venv": { label: "venv", color: "var(--s-python-venv)", icon: "🐍" },
+  "python-cache": { label: "pycache", color: "var(--s-python-cache)", icon: "⚡" },
+  "web-dist": { label: "dist", color: "var(--s-web-dist)", icon: "🌐" },
 };
 
 const ALL_RULES = Object.keys(RULE_META);
 const DEFAULT_RULES = ALL_RULES.filter((r) => r !== "web-dist");
 
 type SortMode = "size" | "stale";
+
+/** 生态图标：大号 emoji 作为每行视觉锚点；未知 ruleId 回退为通用目录图标。 */
+function EcoIcon({ ruleId, size = "md" }: { ruleId: string; size?: "md" | "lg" }) {
+  const meta = RULE_META[ruleId];
+  return (
+    <span
+      className={`inline-flex items-center justify-center rounded-lg bg-[var(--grid)]/50 ${
+        size === "lg" ? "size-11 text-2xl" : "size-9 text-xl"
+      }`}
+    >
+      {meta?.icon ?? "🗂️"}
+    </span>
+  );
+}
 
 function RuleTag({ ruleId }: { ruleId: string }) {
   const meta = RULE_META[ruleId];
@@ -350,7 +364,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 表格 */}
+      {/* 产物列表 */}
       <main className="flex-1 overflow-auto px-6 pb-6">
         <div className="rounded-xl border border-[var(--hairline)] bg-[var(--surface)] overflow-hidden min-h-[280px]">
           {sorted.length === 0 ? (
@@ -368,95 +382,122 @@ export default function App() {
               )}
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-[var(--surface)] text-[var(--muted)] text-xs">
-                <tr className="[&>th]:px-4 [&>th]:py-2.5 [&>th]:text-left [&>th]:font-normal border-b border-[var(--grid)]">
-                  <th className="w-10">
-                    <input
-                      type="checkbox"
-                      checked={selected.size === artifacts.length && artifacts.length > 0}
-                      onChange={toggleAll}
-                    />
-                  </th>
-                  <th className="w-24">类型</th>
-                  <th className="w-52">项目</th>
-                  <th className="cursor-pointer select-none w-[280px]" onClick={() => setSort("size")}>
-                    大小 {sort === "size" && "▾"}
-                  </th>
-                  <th className="cursor-pointer select-none w-28" onClick={() => setSort("stale")}>
-                    最后活跃 {sort === "stale" && "▾"}
-                  </th>
-                  <th>路径</th>
-                  <th className="w-10" />
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((a) => (
-                  <tr
-                    key={a.id}
-                    className={`group border-b border-[var(--grid)] last:border-0 hover:bg-white/[0.03] [&>td]:px-4 [&>td]:py-2 cursor-default ${
-                      selected.has(a.id) ? "bg-white/[0.04]" : ""
-                    }`}
-                    onClick={() => toggle(a.id)}
-                  >
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={selected.has(a.id)}
-                        onChange={() => toggle(a.id)}
-                      />
-                    </td>
-                    <td>
-                      <RuleTag ruleId={a.ruleId} />
-                    </td>
-                    <td className="font-medium truncate max-w-52">
-                      <span className="align-middle">{a.projectName}</span>
-                      {isStale(a) && (
-                        <span
-                          className="ml-2 align-middle inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
-                          style={{ color: "var(--warning)", background: "rgba(250,178,25,0.12)" }}
-                        >
-                          ⏱ 陈旧
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <div className="flex items-center gap-3">
-                        <span className="tabular-nums text-[var(--ink-2)] w-20 shrink-0">
-                          {fmtSize(a.sizeBytes)}
-                        </span>
-                        <span className="flex-1 h-1.5 rounded-full bg-[var(--grid)] overflow-hidden">
+            <>
+              {/* 轻量工具条：全选 + 计数 + 排序 */}
+              <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 border-b border-[var(--grid)] bg-[var(--surface)] text-xs text-[var(--muted)]">
+                <input
+                  type="checkbox"
+                  checked={selected.size === artifacts.length && artifacts.length > 0}
+                  onChange={toggleAll}
+                />
+                <span>
+                  {artifacts.length} 个产物{selected.size > 0 && ` · 已选 ${selected.size}`}
+                </span>
+                <div className="flex-1" />
+                <button
+                  onClick={() => setSort("size")}
+                  className={`px-2 py-0.5 rounded hover:text-[var(--ink-2)] ${
+                    sort === "size" ? "text-[var(--ink-2)] bg-[var(--grid)]/40" : ""
+                  }`}
+                >
+                  按大小 {sort === "size" && "▾"}
+                </button>
+                <button
+                  onClick={() => setSort("stale")}
+                  className={`px-2 py-0.5 rounded hover:text-[var(--ink-2)] ${
+                    sort === "stale" ? "text-[var(--ink-2)] bg-[var(--grid)]/40" : ""
+                  }`}
+                >
+                  按活跃度 {sort === "stale" && "▾"}
+                </button>
+              </div>
+
+              {/* 行列表 */}
+              <div>
+                {sorted.map((a) => {
+                  const meta = RULE_META[a.ruleId];
+                  const sel = selected.has(a.id);
+                  return (
+                    <div
+                      key={a.id}
+                      className={`group flex items-start gap-3 px-4 py-2.5 border-b border-[var(--grid)] last:border-0 hover:bg-white/[0.03] cursor-pointer ${
+                        sel ? "bg-white/[0.04]" : ""
+                      }`}
+                      style={sel ? { borderLeft: `2px solid ${meta?.color ?? "var(--accent)"}` } : undefined}
+                      onClick={() => toggle(a.id)}
+                    >
+                      {/* checkbox */}
+                      <div className="pt-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={sel}
+                          onChange={() => toggle(a.id)}
+                        />
+                      </div>
+                      {/* 生态图标 */}
+                      <div className="shrink-0 pt-0.5">
+                        <EcoIcon ruleId={a.ruleId} />
+                      </div>
+                      {/* 主体 */}
+                      <div className="flex-1 min-w-0">
+                        {/* 主行 */}
+                        <div className="flex items-center gap-2.5">
+                          <span className="font-medium truncate text-[var(--ink-1)]">
+                            {a.projectName}
+                          </span>
+                          <span className="text-[11px] text-[var(--muted)] shrink-0">
+                            {meta?.label ?? a.ruleId}
+                          </span>
+                          {isStale(a) && (
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] shrink-0"
+                              style={{ color: "var(--warning)", background: "rgba(250,178,25,0.12)" }}
+                            >
+                              ⏱ 陈旧
+                            </span>
+                          )}
+                          <div className="flex-1" />
+                          <span className="tabular-nums text-[var(--ink-2)] shrink-0">
+                            {fmtSize(a.sizeBytes)}
+                          </span>
+                          <span className="text-[var(--muted)] text-xs whitespace-nowrap shrink-0">
+                            {fmtDaysAgo(a.lastActiveMs)}
+                          </span>
+                        </div>
+                        {/* 大小条 */}
+                        <div className="mt-1.5 h-1.5 rounded-full bg-[var(--grid)] overflow-hidden">
                           <span
                             className="block h-full rounded-full transition-[width] duration-300"
                             style={{
                               width: `${Math.max(2, ((a.sizeBytes ?? 0) / maxBytes) * 100)}%`,
-                              background: RULE_META[a.ruleId]?.color ?? "var(--muted)",
+                              background: meta?.color ?? "var(--muted)",
                             }}
                           />
-                        </span>
+                        </div>
+                        {/* 次行：路径 + 再生提示 */}
+                        <div className="flex items-center gap-2 text-xs text-[var(--muted)] mt-1">
+                          <span className="truncate" title={a.path} onClick={(e) => e.stopPropagation()}>
+                            {a.path}
+                          </span>
+                          <span className="text-[var(--grid)] shrink-0">·</span>
+                          <span className="shrink-0">{a.regenHint}</span>
+                        </div>
                       </div>
-                    </td>
-                    <td className="text-[var(--ink-2)] whitespace-nowrap">{fmtDaysAgo(a.lastActiveMs)}</td>
-                    <td
-                      className="text-[var(--muted)] truncate max-w-[300px]"
-                      title={a.path}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {a.path}
-                    </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => revealItemInDir(a.path)}
-                        title="在资源管理器中打开"
-                        className="opacity-0 group-hover:opacity-100 text-[var(--muted)] hover:text-[var(--ink-1)] transition-opacity"
-                      >
-                        📂
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      {/* hover 操作 */}
+                      <div className="pt-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => revealItemInDir(a.path)}
+                          title="在资源管理器中打开"
+                          className="opacity-0 group-hover:opacity-100 text-[var(--muted)] hover:text-[var(--ink-1)] transition-opacity"
+                        >
+                          📂
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
       </main>
