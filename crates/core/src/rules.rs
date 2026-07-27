@@ -94,37 +94,59 @@ pub fn known_dir_names() -> Vec<&'static str> {
     RULES.iter().flat_map(|r| r.dir_names.iter().copied()).collect()
 }
 
-/// 末段命中任一规则返回该规则（取表内第一条），用于删除前反查。
+/// 末段命中任一规则返回该规则（取表内第一条），仅用于"这个名字是否属于某规则"的快速判断。
 pub fn rule_for_dir_name(name: &str) -> Option<&'static CleanRule> {
     RULES.iter().find(|r| r.dir_names.contains(&name))
 }
 
-/// 对给定路径重跑 marker 确认：路径末段命中规则 + 该规则的 marker 仍成立。
+/// 对给定路径重跑 marker 确认：在所有"目录名命中"的规则中，取第一条 marker 也通过的。
 ///
-/// 与扫描时 `scan::match_rule` 走相同的判定逻辑，使删除前的校验自洽——
-/// 即使外部绕过 scan 直接调 `delete_to_trash`，也不会删掉"同名但无 marker"的目录。
+/// 与扫描时 `scan::match_rule` 走**相同**的判定逻辑——同名目录（如 `target` 同时被
+/// rust/maven 声明）按表内顺序逐条检查 marker，确保"扫描能识别 → 删除能通过"。
+/// 这样即使外部绕过 scan 直接调 `delete_to_trash`，校验也与扫描一致。
 pub fn validate_marker(path: &Path) -> Result<&'static CleanRule, String> {
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| format!("无效路径: {}", path.display()))?;
-    let rule = rule_for_dir_name(&name)
-        .ok_or_else(|| format!("拒绝删除非产物目录: {}", path.display()))?;
-    let ok = match rule.marker {
+        .ok_or_else(|| format!("无效路径: {}", path.display()))?
+        .to_string_lossy();
+    // 收集所有目录名命中的规则（target 会命中 rust 和 maven 两条）
+    let hits: Vec<&'static CleanRule> = RULES
+        .iter()
+        .filter(|r| r.dir_names.contains(&name.as_ref()))
+        .collect();
+    if hits.is_empty() {
+        return Err(format!("拒绝删除非产物目录: {}", path.display()));
+    }
+    // 取第一条 marker 也通过的——与 scan::match_rule 一致
+    for rule in &hits {
+        if marker_ok(rule, path) {
+            return Ok(rule);
+        }
+    }
+    // 全部命中规则但无一条 marker 通过：报错时列出所有候选项的期望 marker
+    let expected = hits
+        .iter()
+        .map(|r| marker_desc(r.marker))
+        .collect::<Vec<_>>()
+        .join(" 或 ");
+    Err(format!(
+        "目录名命中但 marker 未确认，拒绝删除: {}（期望 {}）",
+        path.display(),
+        expected
+    ))
+}
+
+/// 判定某规则的 marker 在给定路径上是否成立。
+///
+/// 扫描（`scan::match_rule`）与删除前校验（`validate_marker`）共用此函数，
+/// 确保"能扫出来 ⟺ 能通过删除校验"，杜绝扫描/删除语义分裂。
+pub(crate) fn marker_ok(rule: &CleanRule, path: &Path) -> bool {
+    match rule.marker {
         Marker::ParentHas(markers) => path
             .parent()
             .is_some_and(|p| markers.iter().any(|m| p.join(m).is_file())),
         Marker::SelfHas(marker) => path.join(marker).is_file(),
         Marker::None => true,
-    };
-    if ok {
-        Ok(rule)
-    } else {
-        Err(format!(
-            "目录名命中但 marker 未确认，拒绝删除: {}（缺少 {}）",
-            path.display(),
-            marker_desc(rule.marker)
-        ))
     }
 }
 

@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use crate::rules::{CleanRule, Marker};
+use crate::rules::{marker_ok, CleanRule};
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -57,16 +57,7 @@ pub fn scan_artifacts(
 fn match_rule(path: &Path, name: &str, rules: &[&'static CleanRule]) -> Option<&'static CleanRule> {
     rules
         .iter()
-        .find(|rule| {
-            rule.dir_names.contains(&name)
-                && match rule.marker {
-                    Marker::ParentHas(markers) => path
-                        .parent()
-                        .is_some_and(|p| markers.iter().any(|m| p.join(m).is_file())),
-                    Marker::SelfHas(marker) => path.join(marker).is_file(),
-                    Marker::None => true,
-                }
-        })
+        .find(|rule| rule.dir_names.contains(&name) && marker_ok(rule, path))
         .copied()
 }
 
