@@ -130,6 +130,7 @@ export default function App() {
     try {
       const report = await invoke<DeleteReport>("delete_artifacts", {
         paths: items.map((a) => a.path),
+        dryRun: false,
       });
       const deletedSet = new Set(report.deleted);
       setArtifacts((prev) => prev.filter((a) => !deletedSet.has(a.path)));

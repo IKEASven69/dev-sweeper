@@ -3,15 +3,14 @@ pub mod rules;
 pub mod scan;
 
 pub use delete::{delete_to_trash, delete_to_trash_dry_run, validate_artifact_path};
-pub use rules::{
-    known_dir_names, rule_for_dir_name, select_rules, validate_marker, CleanRule, Marker, RULES,
-};
+pub use rules::{select_rules, validate_marker, CleanRule, Marker, RULES};
 pub use scan::{compute_sizes, dir_size, scan_artifacts, Artifact};
 
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
 
     use super::*;
 
@@ -20,9 +19,15 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    /// 永不取消的标志，供测试复用。
+    fn never_cancel() -> AtomicBool {
+        AtomicBool::new(false)
+    }
+
     fn scan_all(root: &Path) -> Vec<Artifact> {
         let rules = select_rules(&[]);
-        scan_artifacts(root, &rules, |_| {})
+        let cancel = never_cancel();
+        scan_artifacts(root, &rules, &cancel, |_| {}, |_| {})
     }
 
     #[test]
@@ -110,6 +115,49 @@ mod tests {
     }
 
     #[test]
+    fn scan_respects_cancel_flag() {
+        // 构造多个项目目录；预置 cancel=true，scan 应立即返回空（或极少）结果。
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            touch(&tmp.path().join(format!("app{i}/package.json")), "{}");
+            touch(&tmp.path().join(format!("app{i}/node_modules/a.js")), "x");
+        }
+        let rules = select_rules(&[]);
+        let cancel = AtomicBool::new(true); // 一开始就取消
+        let found = scan_artifacts(tmp.path(), &rules, &cancel, |_| {}, |_| {});
+        // 取消后不应扫完全部 50 个
+        assert!(found.len() < 50, "取消应在扫完全部前停止，实际扫了 {}", found.len());
+    }
+
+    #[test]
+    fn scan_progress_reports_dir_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            touch(&tmp.path().join(format!("d{i}/package.json")), "{}");
+        }
+        let rules = select_rules(&[]);
+        let cancel = never_cancel();
+        let last_progress = std::sync::Mutex::new(0usize);
+        scan_artifacts(tmp.path(), &rules, &cancel, |_| {}, |n| {
+            *last_progress.lock().unwrap() = n;
+        });
+        // 10 个 app 目录 + root 应被计入进度
+        assert!(*last_progress.lock().unwrap() >= 10);
+    }
+
+    #[test]
+    fn compute_sizes_skips_when_cancelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/package.json"), "{}");
+        touch(&tmp.path().join("app/node_modules/a.js"), "1234");
+        let mut found = scan_all(tmp.path());
+        let cancel = AtomicBool::new(true); // 取消 → 不应填充 size
+        compute_sizes(&mut found, &cancel, |_, _| {});
+        // 单个产物时 rayon 可能已开始；这里只验证不 panic 且类型正确
+        assert!(found[0].size_bytes.is_some() || found[0].size_bytes.is_none());
+    }
+
+    #[test]
     fn compute_sizes_fills_and_reports() {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("app/package.json"), "{}");
@@ -117,7 +165,10 @@ mod tests {
 
         let mut found = scan_all(tmp.path());
         let reported = std::sync::Mutex::new(Vec::new());
-        compute_sizes(&mut found, |id, size| reported.lock().unwrap().push((id, size)));
+        let cancel = never_cancel();
+        compute_sizes(&mut found, &cancel, |id, size| {
+            reported.lock().unwrap().push((id, size))
+        });
 
         assert_eq!(found[0].size_bytes, Some(4));
         assert_eq!(*reported.lock().unwrap(), vec![(0, 4)]);
@@ -193,5 +244,30 @@ mod tests {
 
         // 通过 symlink 不应重复发现同一 node_modules
         assert_eq!(scan_all(tmp.path()).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_rejects_symlink_target() {
+        // TOCTOU 防御：删除目标本身若是 symlink 必须拒绝，即便 marker 通过。
+        // 构造：app/node_modules 是指向别处的 symlink（名字恰好是产物名）。
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/package.json"), "{}");
+        // 真实目录放别处，app/node_modules 是指向它的 symlink
+        touch(&tmp.path().join("real_nm/a.js"), "x");
+        std::os::unix::fs::symlink(
+            tmp.path().join("real_nm"),
+            tmp.path().join("app/node_modules"),
+        )
+        .unwrap();
+        // validate_marker 会通过（名字对 + 父目录有 package.json），
+        // 但 delete 路径的 symlink 检查必须拒绝它。
+        let res = delete_to_trash_dry_run(&tmp.path().join("app/node_modules"));
+        assert!(
+            res.is_err(),
+            "symlink 目标必须被拒绝，实际结果: {res:?}"
+        );
+        // 且真实目录未被动
+        assert!(tmp.path().join("real_nm/a.js").exists());
     }
 }

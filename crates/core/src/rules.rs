@@ -89,14 +89,24 @@ pub fn select_rules(ids: &[String]) -> Vec<&'static CleanRule> {
     }
 }
 
-/// 所有规则覆盖的目录名，用于删除前校验。
-pub fn known_dir_names() -> Vec<&'static str> {
-    RULES.iter().flat_map(|r| r.dir_names.iter().copied()).collect()
+/// 目录名是否匹配某规则的 dir_names。
+///
+/// **跨平台一致性**：Windows / macOS 文件系统大小写不敏感，故 `NODE_MODULES`、
+/// `Target`、`Build` 也应被识别（否则会漏扫）。Linux 保持精确匹配——那里大小写
+/// 不同就是不同目录，宽松匹配反而误删。macOS 默认 APFS 大小写不敏感，对齐之。
+pub(crate) fn dir_name_matches(rule: &CleanRule, name: &str) -> bool {
+    rule.dir_names.iter().any(|dn| names_equal(dn, name))
 }
 
-/// 末段命中任一规则返回该规则（取表内第一条），仅用于"这个名字是否属于某规则"的快速判断。
-pub fn rule_for_dir_name(name: &str) -> Option<&'static CleanRule> {
-    RULES.iter().find(|r| r.dir_names.contains(&name))
+/// 平台感知的目录名相等判定。
+#[cfg(any(windows, target_os = "macos"))]
+fn names_equal(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn names_equal(a: &str, b: &str) -> bool {
+    a == b
 }
 
 /// 对给定路径重跑 marker 确认：在所有"目录名命中"的规则中，取第一条 marker 也通过的。
@@ -112,7 +122,7 @@ pub fn validate_marker(path: &Path) -> Result<&'static CleanRule, String> {
     // 收集所有目录名命中的规则（target 会命中 rust 和 maven 两条）
     let hits: Vec<&'static CleanRule> = RULES
         .iter()
-        .filter(|r| r.dir_names.contains(&name.as_ref()))
+        .filter(|r| dir_name_matches(r, &name))
         .collect();
     if hits.is_empty() {
         return Err(format!("拒绝删除非产物目录: {}", path.display()));

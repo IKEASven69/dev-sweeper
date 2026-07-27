@@ -1,10 +1,17 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use dev_sweeper_core::{compute_sizes, delete_to_trash, scan_artifacts, select_rules, Artifact};
+
+/// CLI 不做优雅取消——用户 Ctrl+C 直接终止进程即可。
+/// 这里只是提供一个永不置位的标志，统一 scan_artifacts 的调用签名。
+fn never_cancel() -> AtomicBool {
+    AtomicBool::new(false)
+}
 
 #[derive(Parser)]
 #[command(
@@ -93,10 +100,23 @@ fn main() {
 }
 
 fn scan_and_size(path: &Path, rule_ids: &[String], stale_days: Option<u64>) -> Vec<Artifact> {
+    // #6: 未知规则 id 打 warning，避免用户以为在扫某类产物实际没扫
+    if !rule_ids.is_empty() {
+        let known: std::collections::HashSet<&str> = dev_sweeper_core::RULES
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        for id in rule_ids {
+            if !known.contains(id.as_str()) {
+                eprintln!("warning: 未知规则 id「{id}」（已忽略）。已知: node, rust, maven, gradle, python-venv, python-cache, web-dist");
+            }
+        }
+    }
     let rules = select_rules(rule_ids);
+    let cancel = never_cancel();
     eprintln!("扫描 {} …", path.display());
-    let mut artifacts = scan_artifacts(path, &rules, |_| {});
-    compute_sizes(&mut artifacts, |_, _| {});
+    let mut artifacts = scan_artifacts(path, &rules, &cancel, |_| {}, |_| {});
+    compute_sizes(&mut artifacts, &cancel, |_, _| {});
     if let Some(days) = stale_days {
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
         let cutoff = now_ms.saturating_sub(days * 24 * 3600 * 1000);

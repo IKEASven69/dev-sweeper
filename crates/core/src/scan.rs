@@ -1,11 +1,12 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use crate::rules::{marker_ok, CleanRule};
+use crate::rules::{dir_name_matches, marker_ok, CleanRule};
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -24,20 +25,36 @@ pub struct Artifact {
 
 /// 单遍遍历：目录名命中规则且标记确认 → 记为 Artifact 并不再深入；跳过 .git；
 /// 不 follow symlink；遍历错误（如无权限）静默跳过。
+///
+/// - `cancel`：置 true 则尽快终止（下次循环检查点退出），返回已发现的部分结果。
+/// - `on_found`：每发现一个产物即回调（流式 UI 用）。
+/// - `on_progress`：每扫约 256 个目录回调一次已扫目录数（进度条用）。
 pub fn scan_artifacts(
     root: &Path,
     rules: &[&'static CleanRule],
+    cancel: &AtomicBool,
     mut on_found: impl FnMut(&Artifact),
+    mut on_progress: impl FnMut(usize),
 ) -> Vec<Artifact> {
     let mut found = Vec::new();
+    let mut scanned_dirs = 0usize;
     let mut it = WalkDir::new(root).follow_links(false).into_iter();
     while let Some(entry) = it.next() {
+        // 取消检查点：在每次取下一个条目前检查
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
         };
         if entry.depth() == 0 || !entry.file_type().is_dir() {
             continue;
+        }
+        scanned_dirs = scanned_dirs.wrapping_add(1);
+        // 每 256 个目录回报一次进度，避免 emit 过密
+        if scanned_dirs & 0xFF == 0 {
+            on_progress(scanned_dirs);
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == ".git" {
@@ -51,13 +68,15 @@ pub fn scan_artifacts(
             found.push(artifact);
         }
     }
+    // 终态进度（无论取消与否，让 UI 收尾）
+    on_progress(scanned_dirs);
     found
 }
 
 fn match_rule(path: &Path, name: &str, rules: &[&'static CleanRule]) -> Option<&'static CleanRule> {
     rules
         .iter()
-        .find(|rule| rule.dir_names.contains(&name) && marker_ok(rule, path))
+        .find(|rule| dir_name_matches(rule, name) && marker_ok(rule, path))
         .copied()
 }
 
@@ -115,8 +134,18 @@ fn last_active_ms(project_dir: &Path) -> Option<u64> {
 }
 
 /// rayon 并行计算每个产物目录的大小，算完一个回调一个。
-pub fn compute_sizes(artifacts: &mut [Artifact], on_sized: impl Fn(u32, u64) + Sync) {
+///
+/// `cancel` 置 true 后，尚未开始的任务会被跳过（已开始的会算完）。
+/// 大小未算出的产物其 `size_bytes` 仍为 `None`。
+pub fn compute_sizes(
+    artifacts: &mut [Artifact],
+    cancel: &AtomicBool,
+    on_sized: impl Fn(u32, u64) + Sync,
+) {
     artifacts.par_iter_mut().for_each(|a| {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let size = dir_size(Path::new(&a.path));
         a.size_bytes = Some(size);
         on_sized(a.id, size);

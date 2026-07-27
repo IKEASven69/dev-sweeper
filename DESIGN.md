@@ -200,9 +200,13 @@ pub fn scan_artifacts(
 **关键决策**：
 
 1. **命中即 `skip_current_dir`**：`node_modules` 内嵌套的 `node_modules` 不重复记录（避免一个项目被记 N 次）。单测 `does_not_descend_into_matched_dirs` 守住。
+   - **取舍代价**：命中产物后不再深入，因此 `node_modules` 内若嵌套了**异生态**真项目（如 native addon 里的 Rust crate，其 `target`），会被漏掉。这是有意的——优先保证"不重复计数"的简洁语义，且这种嵌套真项目极罕见。
 2. **跳过 `.git`**：版本控制目录不进，既省时间又避免 `.git/modules` 里的产物被误算。
-3. **不 follow symlink**：pnpm 的软链不重复计数；防 symlink 环。单测 `does_not_follow_symlinks` 守住（unix）。
+3. **不 follow symlink**：pnpm 的软链不重复计数；防 symlink 环。
 4. **遍历错误静默跳过**：无权限目录等 `Err(_) => continue`，扫描不会因一个不可读目录而中断。
+5. **目录名匹配平台感知**（见 `rules.rs::dir_name_matches`）：Windows / macOS 文件系统大小写不敏感，故 `NODE_MODULES`、`Target`、`Build` 也识别；Linux 保持精确匹配（大小写不同即不同目录）。
+6. **可取消**：`scan_artifacts` 接收 `&AtomicBool`，每次取下一个条目前检查；`compute_sizes` 的 rayon 任务开头也检查。GUI 的 `cancel_scan` 命令置位后扫描尽快收尾，返回已发现的部分结果（`ScanSummary.cancelled = true`）。
+7. **进度回调**：每扫约 256 个目录调一次 `on_progress(scanned_dirs)`，GUI emit `scan:progress` 事件驱动进度条。
 
 **为什么不预排序目录**：`walkdir` 流式产出，`on_found` 即时回调——前端能"边扫边显示"，体验远好于"扫完一次性出"。
 
@@ -318,7 +322,9 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 | **无权限容错** | 遍历错误静默跳过，不中断扫描 | `scan.rs` `Err(_) => continue` |
 | **删除前二次确认** | GUI 弹窗 + CLI `confirm()` | `App.tsx` / `cli/main.rs` |
 | **路径白名单（名+marker）** | 删除前 `validate_marker` 反查规则并重跑 marker | `rules.rs::validate_marker` → `delete.rs` |
-| **预演不执行** | `delete_to_trash_dry_run` / `sweep clean -n` | `delete.rs` / `cli/main.rs` |
+| **预演不执行** | `delete_to_trash_dry_run` / `sweep clean -n` / GUI `dryRun` 入参 | `delete.rs` / `cli/main.rs` / `lib.rs` |
+| **TOCTOU 防御** | 拒绝 symlink 目标 + 紧贴 trash 前复查 marker | `delete.rs::delete_to_trash_with` |
+| **可取消扫描** | `AtomicBool` 贯穿 scan/compute_sizes，GUI `cancel_scan` 命令 | `scan.rs` / `lib.rs` |
 
 ---
 
@@ -392,7 +398,7 @@ dev-sweeper/
 | **规则表驱动** | 加生态零分支，单测易写。 |
 | **React 19 + Tailwind v4** | 现代前端，CSS 变量驱动的暗色 dataviz 调色板。 |
 
-## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 13 测）
+## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 16 测 + 1 unix-only）
 
 | 测试 | 守住的属性 |
 |---|---|
@@ -405,8 +411,12 @@ dev-sweeper/
 | `dir_size_sums_files` | 大小累加正确 |
 | `compute_sizes_fills_and_reports` | 流式 size 回调 |
 | `delete_rejects_non_artifact_path` | 末段非产物名 → 拒绝 |
-| `delete_rejects_known_name_without_marker` | **名字对但无 marker → 拒绝**（P0-1） |
-| `validate_marker_accepts_with_marker` | node/rust/venv/cache 四类正向通过（P0-1） |
-| `dry_run_validates_but_does_not_delete` | 预演校验通过且不删（P0-2） |
-| `dry_run_rejects_without_marker` | 预演对无 marker 路径也拒绝（P0-2） |
+| `delete_rejects_known_name_without_marker` | 名字对但无 marker → 拒绝 |
+| `validate_marker_accepts_with_marker` | node/rust/venv/cache 四类正向 |
+| `dry_run_validates_but_does_not_delete` | 预演校验通过且不删 |
+| `dry_run_rejects_without_marker` | 预演对无 marker 路径也拒绝 |
+| `scan_respects_cancel_flag` | 取消标志生效，不扫完全部即停 |
+| `scan_progress_reports_dir_count` | 进度回调报告已扫目录数 |
+| `compute_sizes_skips_when_cancelled` | 取消后 size 计算跳过 |
 | `does_not_follow_symlinks` (unix) | 不 follow symlink |
+| `delete_rejects_symlink_target` (unix) | **TOCTOU：删除目标本身是 symlink → 拒绝** |

@@ -32,9 +32,21 @@ pub fn delete_to_trash_dry_run(path: &Path) -> Result<(), String> {
 
 fn delete_to_trash_with(path: &Path, dry_run: bool) -> Result<(), String> {
     validate_marker(path)?;
+    // TOCTOU 防御：拒绝 symlink 作为删除目标。
+    // 产物目录（node_modules/target/.venv…）本身不应该是 symlink——若它是，
+    // 可能是有人在校验后把目标路径替换成了指向别处的软链，跟着删会误伤。
+    // 使用 symlink_metadata 避免 follow 目标。
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("无法读取路径元数据: {e}"))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("拒绝删除符号链接（防止 TOCTOU 替换攻击）: {}", path.display()));
+    }
     if !path.exists() {
         return Err(format!("路径不存在: {}", path.display()));
     }
+    // 缩小校验-删除窗口：紧贴 trash::delete 再确认一次 marker 仍成立。
+    // 至此路径确定是真实目录且非 symlink，最后一刻的 marker 复查进一步降低竞态风险。
+    validate_marker(path)?;
     if dry_run {
         return Ok(());
     }
