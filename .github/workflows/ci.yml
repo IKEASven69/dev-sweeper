@@ -25,8 +25,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (core 单测，含 unix-only 用例)
         run: cargo test -p dev-sweeper-core --verbose
-      - name: cargo build workspace（CLI + Tauri 壳编译）
-        run: cargo build --workspace --verbose
+      # 只编译 core + cli（不编译 Tauri 壳）——后者在 Linux 需 webview/glib 等系统库，
+      # 完整打包交给 release 流程。core+cli 足以守护扫描/删除逻辑。
+      - name: cargo build (core + cli)
+        run: cargo build -p dev-sweeper-core -p dev-sweeper-cli --verbose
 
   frontend-check:
     name: tsc typecheck
@@ -39,7 +41,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: TypeScript 类型检查
         run: pnpm exec tsc --noEmit
