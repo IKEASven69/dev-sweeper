@@ -21,6 +21,8 @@ pub struct Artifact {
     /// 项目最后活跃时间（epoch 毫秒），None = 无法确定
     pub last_active_ms: Option<u64>,
     pub regen_hint: String,
+    /// 删除风险："safe"（构建产物，秒级重 build）/ "notice"（依赖/环境，重装较慢）
+    pub risk: String,
 }
 
 /// 单遍遍历：目录名命中规则且标记确认 → 记为 Artifact 并不再深入；跳过 .git；
@@ -108,6 +110,10 @@ fn build_artifact(id: u32, rule: &'static CleanRule, path: &Path) -> Artifact {
         size_bytes: None,
         last_active_ms: last_active_ms(project_dir),
         regen_hint: rule.regen_hint.to_string(),
+        risk: match rule.risk {
+            crate::rules::Risk::Safe => "safe".into(),
+            crate::rules::Risk::Notice => "notice".into(),
+        },
     }
 }
 

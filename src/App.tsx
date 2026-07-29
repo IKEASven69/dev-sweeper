@@ -14,11 +14,13 @@ interface Artifact {
   sizeBytes: number | null;
   lastActiveMs: number | null;
   regenHint: string;
+  risk: "safe" | "notice" | string;
 }
 
 interface DeleteReport {
   deleted: string[];
   failed: [string, string][];
+  dryRun: boolean;
 }
 
 /* 分类色按固定槽位顺序分配（dataviz 暗面校验通过的顺序），标签文字不沾系列色 */
@@ -75,6 +77,13 @@ function StatTile(props: { label: string; value: string; sub?: string; accent?: 
 
 export default function App() {
   const [root, setRoot] = useState<string>(() => localStorage.getItem("root") ?? "");
+  const [excludes, setExcludes] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("excludes") ?? "[]");
+    } catch {
+      return [];
+    }
+  });
   const [ruleIds, setRuleIds] = useState<string[]>(DEFAULT_RULES);
   const [staleDays, setStaleDays] = useState(90);
   const [scanning, setScanning] = useState(false);
@@ -168,7 +177,7 @@ export default function App() {
     setScanProgress(null);
     setScanning(true);
     try {
-      await invoke("scan", { root, ruleIds, excludes: [] });
+      await invoke("scan", { root, ruleIds, excludes });
     } catch (e) {
       console.error(e);
       setScanning(false);
@@ -184,6 +193,23 @@ export default function App() {
     }
   }
 
+  function addExclude(dir: string) {
+    setExcludes((prev) => {
+      if (prev.some((e) => e === dir)) return prev;
+      const next = [...prev, dir];
+      localStorage.setItem("excludes", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function removeExclude(dir: string) {
+    setExcludes((prev) => {
+      const next = prev.filter((e) => e !== dir);
+      localStorage.setItem("excludes", JSON.stringify(next));
+      return next;
+    });
+  }
+
   async function doDelete() {
     const items = artifacts.filter((a) => selected.has(a.id));
     setDeleting(true);
@@ -197,6 +223,26 @@ export default function App() {
       setArtifacts((prev) => prev.filter((a) => !deletedSet.has(a.path)));
       setSelected(new Set());
       setLastReport(report);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+      setProgress(null);
+    }
+  }
+
+  // 预演：只校验不执行，弹 toast 显示"本会删除 N 项 / M 项被拒"
+  async function doDryRun() {
+    const items = artifacts.filter((a) => selected.has(a.id));
+    setDeleting(true);
+    setProgress({ done: 0, total: items.length });
+    try {
+      const report = await invoke<DeleteReport>("delete_artifacts", {
+        paths: items.map((a) => a.path),
+        dryRun: true,
+      });
+      setLastReport({ ...report, dryRun: true });
     } catch (e) {
       console.error(e);
     } finally {
@@ -376,6 +422,39 @@ export default function App() {
             />
             <span>天未动</span>
           </div>
+          {excludes.length > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-[var(--muted)] flex-wrap">
+              <span>🚫 已排除:</span>
+              {excludes.map((ex) => {
+                const name = ex.replace(/\\/g, "/").split("/").pop() ?? ex;
+                return (
+                  <span
+                    key={ex}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[var(--grid)]/40"
+                    title={ex}
+                  >
+                    {name}
+                    <button
+                      onClick={() => removeExclude(ex)}
+                      className="hover:text-[var(--ink-1)]"
+                      title="移除排除"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+              <button
+                onClick={() => {
+                  setExcludes([]);
+                  localStorage.setItem("excludes", "[]");
+                }}
+                className="hover:text-[var(--ink-1)] underline"
+              >
+                清空
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -491,6 +570,23 @@ export default function App() {
                           <span className="text-[11px] text-[var(--muted)] shrink-0">
                             {meta?.label ?? a.ruleId}
                           </span>
+                          {a.risk === "notice" ? (
+                            <span
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] shrink-0"
+                              style={{ color: "var(--warning)", background: "rgba(250,178,25,0.12)" }}
+                              title="依赖/环境，删除后重装较慢"
+                            >
+                              🟡 重装较慢
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] shrink-0 text-[var(--muted)]"
+                              style={{ background: "rgba(255,255,255,0.05)" }}
+                              title="构建产物，重新 build 秒级恢复"
+                            >
+                              🟢 易恢复
+                            </span>
+                          )}
                           {isStale(a) && (
                             <span
                               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] shrink-0"
@@ -527,11 +623,21 @@ export default function App() {
                         </div>
                       </div>
                       {/* hover 操作 */}
-                      <div className="pt-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <div
+                        className="pt-1.5 shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={() => addExclude(a.projectDir)}
+                          title={`排除「${a.projectDir}」（不再扫描此项目）`}
+                          className="text-[var(--muted)] hover:text-[var(--warning)]"
+                        >
+                          🚫
+                        </button>
                         <button
                           onClick={() => revealItemInDir(a.path)}
                           title="在资源管理器中打开"
-                          className="opacity-0 group-hover:opacity-100 text-[var(--muted)] hover:text-[var(--ink-1)] transition-opacity"
+                          className="text-[var(--muted)] hover:text-[var(--ink-1)]"
                         >
                           📂
                         </button>
@@ -548,12 +654,26 @@ export default function App() {
       {/* 删除结果 toast */}
       {lastReport && (
         <div className="toast-in fixed bottom-5 right-5 z-20 rounded-xl border border-[var(--hairline)] bg-[var(--surface)] px-4 py-3 text-sm shadow-xl">
-          <span style={{ color: "var(--good)" }}>✓</span> 已移入回收站{" "}
-          {lastReport.deleted.length} 项，可随时恢复
-          {lastReport.failed.length > 0 && (
-            <div className="mt-1 text-xs" style={{ color: "var(--critical)" }}>
-              ✕ {lastReport.failed.length} 项失败：{lastReport.failed[0][1]}
-            </div>
+          {lastReport.dryRun ? (
+            <>
+              <span style={{ color: "var(--accent)" }}>🔍</span> 预演：{lastReport.deleted.length} 项可删，
+              实际未删除
+              {lastReport.failed.length > 0 && (
+                <div className="mt-1 text-xs" style={{ color: "var(--critical)" }}>
+                  ✕ {lastReport.failed.length} 项会被拒：{lastReport.failed[0][1]}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <span style={{ color: "var(--good)" }}>✓</span> 已移入回收站{" "}
+              {lastReport.deleted.length} 项，可随时恢复
+              {lastReport.failed.length > 0 && (
+                <div className="mt-1 text-xs" style={{ color: "var(--critical)" }}>
+                  ✕ {lastReport.failed.length} 项失败：{lastReport.failed[0][1]}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -607,6 +727,14 @@ export default function App() {
                 className="px-4 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--baseline)] text-sm text-[var(--ink-2)]"
               >
                 取消
+              </button>
+              <button
+                onClick={doDryRun}
+                disabled={deleting}
+                className="px-3 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--accent)] hover:text-[var(--accent)] text-sm text-[var(--ink-2)]"
+                title="只校验路径与 marker，不真正删除"
+              >
+                {deleting ? "校验中…" : "先预演"}
               </button>
               <button
                 onClick={doDelete}

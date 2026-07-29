@@ -3,7 +3,7 @@ pub mod rules;
 pub mod scan;
 
 pub use delete::{delete_to_trash, delete_to_trash_dry_run, validate_artifact_path};
-pub use rules::{select_rules, validate_marker, CleanRule, Marker, RULES};
+pub use rules::{select_rules, validate_marker, CleanRule, Marker, Risk, RULES};
 pub use scan::{compute_sizes, dir_size, scan_artifacts, Artifact};
 
 #[cfg(test)]

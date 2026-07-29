@@ -71,7 +71,7 @@
 | marker 确认降误报 | npkill 纯名匹配的软肋 | ✅ 已有 `Marker` 设计 |
 | aging 要准 | kondo 整树 mtime 的缺陷 | ⚠️ 现状用标记文件 mtime，已比 kondo 准；可引入 git last-commit |
 | 生态广度 | ClearDisk 63+23、kondo 25 | ⚠️ 现状 7 类，需扩充（Unity/Unreal/CMake/.NET/Composer…） |
-| 风险等级可视化 | ClearDisk 🟢🟡🔴 | 📋 待办：规则表加 `risk` 字段 |
+| 风险等级可视化 | ClearDisk 🟢🟡🔴 | ✅ 已加 `Risk::Safe/Notice`，CLI 列 + GUI 徽标 |
 | dry-run | kondo `-n` / npkill `--dry-run` | 📋 待办 |
 | 跨平台 GUI 是空白 | ClearDisk macOS-only | ✅ Tauri 天然跨平台，**核心壁垒** |
 
@@ -151,15 +151,15 @@ pub struct CleanRule {
     pub dir_names: &'static [&'static str], // ["node_modules"] / ["build", ".gradle"]
     pub marker: Marker,                 // 防误删确认条件
     pub regen_hint: &'static str,       // "npm install / pnpm install"
+    pub risk: Risk,                     // 🟢 Safe（构建产物）/ 🟡 Notice（依赖/环境）
     pub default_on: bool,
-    // TODO: pub risk: Risk,             // 🟢🟡🔴（借鉴 ClearDisk）
     // TODO: pub weight: u8,             // 同名目录冲突时的优先级（见 4.1.2）
 }
 ```
 
 **为什么 marker 必要**：`target` 既是 Rust 又是 Maven 产物；任意目录都可能叫 `build`/`env`/`dist`。纯名匹配（npkill 的做法）在多生态下误报率高。marker 确认把"这是真产物"的把握从"名字对"提到"名字对 + 上下文对"。
 
-**现状规则（18 类，default_on 标 ✱）**：
+**现状规则（17 类，default_on 标 ✱）**：
 
 | id | dir_names | marker | regen_hint | 默认 |
 |---|---|---|---|---|
@@ -182,6 +182,11 @@ pub struct CleanRule {
 | web-dist | `.next`, `dist` | ParentHas `[package.json]` | `npm run build` | 关 |
 
 > **Marker 新增 `ParentHasSuffix`**：处理文件名不固定的标记（Unreal 的 `*.uproject`、.NET 的 `*.csproj`）——父目录含指定**后缀**的文件即确认。通用目录名（`bin`/`obj`/`build`/`vendor`/`Library`/`Temp`）一律要求 marker 确认，杜绝误伤同名目录。
+
+> **风险等级 `Risk`**（衡量"删后重生成成本"，回收站已兜底"能否恢复"）：
+> - 🟢 **Safe**：纯构建输出，重新 build 秒级恢复（rust/maven/gradle/cmake/dotnet target/build、python-cache、unity/unreal/godot/swift/zig/elixir cache、web-dist）。
+> - 🟡 **Notice**：依赖或环境，重装可能数分钟且需网络（node_modules、python-venv、composer vendor、cocoapods Pods）。
+> - Artifact 带上 `risk` 字段序列化给前端；CLI 表格有"风险"列；GUI 列表显示徽标（🟢 易恢复 / 🟡 重装较慢）+ hover 提示。
 
 #### 4.1.1 同名目录冲突处理
 
@@ -349,7 +354,7 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [x] **dry-run 模式**：`sweep clean -n` / `delete_to_trash_dry_run`（借鉴 kondo `-n`、npkill `--dry-run`）。
 - [x] **trash-only 显式语义**：`delete.rs` 顶部文档注释写死安全不变量——只走 `trash::delete`，无 `remove_dir_all` 路径，不提供"永久删除"开关。
 
-### P1 — 扩生态广度（已交付，18 类）
+### P1 — 扩生态广度（已交付，17 类）
 - [x] CMake（`build`, `cmake-build-*`，marker `CMakeLists.txt`）
 - [x] .NET（`bin`, `obj`，marker `.csproj`/`.fsproj`/`.vbproj` **后缀**）
 - [x] Unity（`Library`, `Temp`, `Obj`, `Logs`, `MemoryCaptures`，marker `Assembly-CSharp.csproj`）
@@ -357,7 +362,7 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [x] Composer（`vendor`，marker `composer.json`）
 - [x] Godot（`.godot`，marker `project.godot`）、Swift（`.build`/`.swiftpm`，`Package.swift`）、Zig（`zig-cache`/`.zig-cache`/`zig-out`，`build.zig`）、Elixir（`_build`/`.elixir-ls`，`mix.exs`）、CocoaPods（`Pods`，`Podfile`）
 - [x] **Marker 扩 `ParentHasSuffix`**：处理文件名不固定的标记（.uproject/.csproj）
-- [ ] 规则表加 `risk: Risk`（🟢🟡🔴）字段，UI 着色（借鉴 ClearDisk，强化"哪些最安全删"）。
+- [x] **规则表加 `risk: Risk`**（🟢 Safe / 🟡 Notice）：Artifact 带上，CLI 有"风险"列，GUI 显示徽标。借鉴 ClearDisk，强化"哪些最安全删"。
 
 ### P2 — 增强信任与精度（已交付）
 - [x] **git-aware aging**：`last_active_ms` 融合 mtime + git 最后 commit 时间（取 max）。不引入 git2/libgit2（避免重依赖），直接调系统 `git log -1 --format=%ct`；git 不可用/非 git 项目自动回退纯 mtime。commit 时间比 mtime 更能反映真实开发活动。

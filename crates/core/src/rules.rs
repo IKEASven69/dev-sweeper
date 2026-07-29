@@ -15,12 +15,38 @@ pub enum Marker {
     None,
 }
 
+/// 删除风险等级——衡量"删后恢复的成本"（回收站已兜底"能不能恢复"，这里只反映重生成代价）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Risk {
+    /// 🟢 安全：纯构建输出，重新 build 秒级恢复（target/build/__pycache__…）
+    Safe,
+    /// 🟡 注意：依赖或环境，重装可能数分钟且需网络（node_modules/.venv/vendor…）
+    Notice,
+}
+
+impl Risk {
+    pub fn icon(self) -> &'static str {
+        match self {
+            Risk::Safe => "🟢",
+            Risk::Notice => "🟡",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Risk::Safe => "安全",
+            Risk::Notice => "注意",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CleanRule {
     pub id: &'static str,
     pub dir_names: &'static [&'static str],
     pub marker: Marker,
     pub regen_hint: &'static str,
+    /// 删除风险：Safe=纯构建产物秒级恢复，Notice=依赖/环境重装较慢
+    pub risk: Risk,
     pub default_on: bool,
 }
 
@@ -31,6 +57,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["node_modules"],
         marker: Marker::ParentHas(&["package.json"]),
         regen_hint: "npm install / pnpm install",
+        risk: Risk::Notice,
         default_on: true,
     },
     CleanRule {
@@ -38,6 +65,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["target"],
         marker: Marker::ParentHas(&["Cargo.toml"]),
         regen_hint: "cargo build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -45,6 +73,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["target"],
         marker: Marker::ParentHas(&["pom.xml"]),
         regen_hint: "mvn package",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -57,6 +86,7 @@ pub const RULES: &[CleanRule] = &[
             "settings.gradle.kts",
         ]),
         regen_hint: "gradle build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -64,6 +94,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &[".venv", "venv", "env"],
         marker: Marker::SelfHas("pyvenv.cfg"),
         regen_hint: "python -m venv / uv sync",
+        risk: Risk::Notice,
         default_on: true,
     },
     CleanRule {
@@ -71,6 +102,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["__pycache__", ".pytest_cache"],
         marker: Marker::None,
         regen_hint: "运行时自动再生",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -78,6 +110,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["build", "cmake-build-debug", "cmake-build-release"],
         marker: Marker::ParentHas(&["CMakeLists.txt"]),
         regen_hint: "cmake --build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -87,6 +120,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["bin", "obj"],
         marker: Marker::ParentHasSuffix(&[".csproj", ".fsproj", ".vbproj"]),
         regen_hint: "dotnet build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -94,6 +128,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["vendor"],
         marker: Marker::ParentHas(&["composer.json"]),
         regen_hint: "composer install",
+        risk: Risk::Notice,
         default_on: true,
     },
     CleanRule {
@@ -101,6 +136,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["Library", "Temp", "Obj", "Logs", "MemoryCaptures"],
         marker: Marker::ParentHas(&["Assembly-CSharp.csproj"]),
         regen_hint: "Unity 编辑器打开时自动再生",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -108,6 +144,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["Binaries", "Intermediate", "DerivedDataCache", "Saved"],
         marker: Marker::ParentHasSuffix(&[".uproject"]),
         regen_hint: "Unreal 编辑器打开时自动再生",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -115,6 +152,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &[".godot"],
         marker: Marker::ParentHas(&["project.godot"]),
         regen_hint: "Godot 编辑器打开时自动再生",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -122,6 +160,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &[".build", ".swiftpm"],
         marker: Marker::ParentHas(&["Package.swift"]),
         regen_hint: "swift build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -129,6 +168,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["zig-cache", ".zig-cache", "zig-out"],
         marker: Marker::ParentHas(&["build.zig"]),
         regen_hint: "zig build",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -136,6 +176,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["_build", ".elixir-ls"],
         marker: Marker::ParentHas(&["mix.exs"]),
         regen_hint: "mix compile",
+        risk: Risk::Safe,
         default_on: true,
     },
     CleanRule {
@@ -143,6 +184,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &["Pods"],
         marker: Marker::ParentHas(&["Podfile"]),
         regen_hint: "pod install",
+        risk: Risk::Notice,
         default_on: true,
     },
     CleanRule {
@@ -150,6 +192,7 @@ pub const RULES: &[CleanRule] = &[
         dir_names: &[".next", "dist"],
         marker: Marker::ParentHas(&["package.json"]),
         regen_hint: "npm run build",
+        risk: Risk::Safe,
         default_on: false,
     },
 ];

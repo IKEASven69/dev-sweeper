@@ -177,10 +177,16 @@ fn run_dry_run(artifacts: &[Artifact]) {
 fn print_table(artifacts: &[Artifact]) {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL_CONDENSED);
-    table.set_header(["类型", "项目", "大小", "最后活跃", "路径"]);
+    table.set_header(["类型", "风险", "项目", "大小", "最后活跃", "路径"]);
     for a in artifacts {
+        let risk = match a.risk.as_str() {
+            "safe" => "🟢 安全",
+            "notice" => "🟡 注意",
+            _ => "?",
+        };
         table.add_row([
             a.rule_id.clone(),
+            risk.into(),
             a.project_name.clone(),
             fmt_size(a.size_bytes.unwrap_or(0)),
             fmt_days_ago(a.last_active_ms),
