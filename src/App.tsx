@@ -168,7 +168,7 @@ export default function App() {
     setScanProgress(null);
     setScanning(true);
     try {
-      await invoke("scan", { root, ruleIds });
+      await invoke("scan", { root, ruleIds, excludes: [] });
     } catch (e) {
       console.error(e);
       setScanning(false);

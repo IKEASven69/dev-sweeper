@@ -51,6 +51,8 @@ cargo build --release -p dev-sweeper-cli   # 产出 target/release/sweep.exe
 
 sweep scan D:\Projects                     # 列出产物，按大小降序
 sweep scan D:\Projects --rules node,rust --stale-days 90 --json
+sweep scan D:\Projects --no-size           # 快速列出，不算大小
+sweep scan D:\Projects --exclude D:\important  # 保护目录不扫描
 sweep clean D:\Projects --stale-days 180   # 确认后移入回收站
 sweep clean D:\Projects -n                 # 预演：只校验不删除
 ```

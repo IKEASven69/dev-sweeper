@@ -60,6 +60,7 @@ async fn scan(
     state: State<'_, CancelSlot>,
     root: String,
     rule_ids: Vec<String>,
+    excludes: Vec<String>,
 ) -> Result<ScanSummary, String> {
     // State<'_> 不能跨 spawn_blocking（非 'static）；先 clone 出内部的 Arc。
     let cancel_slot: CancelSlot = state.inner().clone();
@@ -77,6 +78,7 @@ async fn scan(
             Path::new(&root),
             &rules,
             &cancel,
+            &excludes,
             |a| {
                 let _ = app.emit("scan:found", a);
             },

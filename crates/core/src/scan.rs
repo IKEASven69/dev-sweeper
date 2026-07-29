@@ -27,12 +27,15 @@ pub struct Artifact {
 /// 不 follow symlink；遍历错误（如无权限）静默跳过。
 ///
 /// - `cancel`：置 true 则尽快终止（下次循环检查点退出），返回已发现的部分结果。
+/// - `excludes`：保护路径前缀列表。命中规则的产物若其路径**以任一排除前缀开头**
+///   则跳过（不记录、不深入也不影响其他目录）——用于"永不清理"的目录。
 /// - `on_found`：每发现一个产物即回调（流式 UI 用）。
 /// - `on_progress`：每扫约 256 个目录回调一次已扫目录数（进度条用）。
 pub fn scan_artifacts(
     root: &Path,
     rules: &[&'static CleanRule],
     cancel: &AtomicBool,
+    excludes: &[String],
     mut on_found: impl FnMut(&Artifact),
     mut on_progress: impl FnMut(usize),
 ) -> Vec<Artifact> {
@@ -63,6 +66,11 @@ pub fn scan_artifacts(
         }
         if let Some(rule) = match_rule(entry.path(), &name, rules) {
             it.skip_current_dir();
+            let path_str = entry.path().to_string_lossy();
+            // 排除前缀命中 → 保护，不记录
+            if excludes.iter().any(|ex| path_excluded(&path_str, ex)) {
+                continue;
+            }
             let artifact = build_artifact(found.len() as u32, rule, entry.path());
             on_found(&artifact);
             found.push(artifact);
@@ -71,6 +79,15 @@ pub fn scan_artifacts(
     // 终态进度（无论取消与否，让 UI 收尾）
     on_progress(scanned_dirs);
     found
+}
+
+/// 判定产物路径是否被排除前缀命中。统一用 `/` 作分隔符比较，消除平台差异。
+fn path_excluded(path: &str, prefix: &str) -> bool {
+    let norm = |s: &str| s.replace('\\', "/");
+    let p = norm(path);
+    let pre = norm(prefix);
+    let pre = pre.trim_end_matches('/');
+    p == pre || p.starts_with(&format!("{pre}/"))
 }
 
 fn match_rule(path: &Path, name: &str, rules: &[&'static CleanRule]) -> Option<&'static CleanRule> {
@@ -111,6 +128,11 @@ fn project_name(rule: &CleanRule, project_dir: &Path) -> String {
 }
 
 /// 项目最后活跃时间：取各生态标记文件与 src/ 目录 mtime 的最大值。
+///
+/// 若项目在 git 仓库内，**额外融合最后一次 commit 的时间**（取 max）——
+/// commit 时间比 mtime 更能反映真实开发活动（依赖文件 mtime 可能被
+/// 安装/构建工具触碰而不代表手写改动）。git 不可用或非 git 项目时
+/// 自动回退到纯 mtime。
 fn last_active_ms(project_dir: &Path) -> Option<u64> {
     const CANDIDATES: &[&str] = &[
         "package.json",
@@ -123,14 +145,43 @@ fn last_active_ms(project_dir: &Path) -> Option<u64> {
         "requirements.txt",
         "src",
     ];
-    CANDIDATES
+    let from_mtime = CANDIDATES
         .iter()
         .filter_map(|c| std::fs::metadata(project_dir.join(c)).ok())
         .chain(std::fs::metadata(project_dir).ok())
         .filter_map(|m| m.modified().ok())
         .filter_map(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
-        .max()
+        .max();
+    // git last-commit（秒级时间戳）。失败静默回退。
+    let from_git = git_last_commit_ms(project_dir);
+    match (from_mtime, from_git) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// 在 project_dir（或其祖先）所在 git 仓库取最后一次 commit 的毫秒时间戳。
+///
+/// 不引入 git2/libgit2（避免重依赖与编译开销），直接调系统 git：
+/// `git -C <dir> log -1 --format=%ct` 输出 unix 秒。任何失败（无 git、
+/// 非 git 仓库、无 commit）均返回 None，调用方静默回退。
+fn git_last_commit_ms(project_dir: &Path) -> Option<u64> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(["log", "-1", "--format=%ct"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let secs: u64 = String::from_utf8_lossy(&output.stdout).trim().parse().ok()?;
+    Some(secs.saturating_mul(1000))
 }
 
 /// rayon 并行计算每个产物目录的大小，算完一个回调一个。

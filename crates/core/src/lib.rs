@@ -27,7 +27,7 @@ mod tests {
     fn scan_all(root: &Path) -> Vec<Artifact> {
         let rules = select_rules(&[]);
         let cancel = never_cancel();
-        scan_artifacts(root, &rules, &cancel, |_| {}, |_| {})
+        scan_artifacts(root, &rules, &cancel, &[], |_| {}, |_| {})
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
         }
         let rules = select_rules(&[]);
         let cancel = AtomicBool::new(true); // 一开始就取消
-        let found = scan_artifacts(tmp.path(), &rules, &cancel, |_| {}, |_| {});
+        let found = scan_artifacts(tmp.path(), &rules, &cancel, &[], |_| {}, |_| {});
         // 取消后不应扫完全部 50 个
         assert!(found.len() < 50, "取消应在扫完全部前停止，实际扫了 {}", found.len());
     }
@@ -211,7 +211,7 @@ mod tests {
         let rules = select_rules(&[]);
         let cancel = never_cancel();
         let last_progress = std::sync::Mutex::new(0usize);
-        scan_artifacts(tmp.path(), &rules, &cancel, |_| {}, |n| {
+        scan_artifacts(tmp.path(), &rules, &cancel, &[], |_| {}, |n| {
             *last_progress.lock().unwrap() = n;
         });
         // 10 个 app 目录 + root 应被计入进度
@@ -228,6 +228,79 @@ mod tests {
         compute_sizes(&mut found, &cancel, |_, _| {});
         // 单个产物时 rayon 可能已开始；这里只验证不 panic 且类型正确
         assert!(found[0].size_bytes.is_some() || found[0].size_bytes.is_none());
+    }
+
+    /// 在 dir 初始化一个临时 git 仓库并做一次提交。系统无 git 时跳过测试。
+    fn git_init_commit(dir: &Path) -> bool {
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        run(&["init"]) && run(&["add", "-A"]) && run(&["commit", "-m", "x"])
+    }
+
+    #[test]
+    fn last_active_fuses_git_commit_and_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/package.json"), "{}");
+        touch(&tmp.path().join("app/node_modules/a.js"), "x");
+        // 无 git 时 last_active_ms 仍应返回 Some（来自 mtime）
+        let found = scan_all(tmp.path());
+        assert_eq!(found.len(), 1);
+        assert!(found[0].last_active_ms.is_some(), "无 git 时应回退 mtime");
+    }
+
+    #[test]
+    fn scan_excludes_protected_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("keep/package.json"), "{}");
+        touch(&tmp.path().join("keep/node_modules/a.js"), "x");
+        touch(&tmp.path().join("protect/package.json"), "{}");
+        touch(&tmp.path().join("protect/node_modules/a.js"), "x");
+
+        let rules = select_rules(&[]);
+        let cancel = never_cancel();
+        // 排除 protect 目录（用前缀）
+        let excludes = vec![tmp.path().join("protect").to_string_lossy().into_owned()];
+        let found = scan_artifacts(tmp.path(), &rules, &cancel, &excludes, |_| {}, |_| {});
+        assert_eq!(found.len(), 1, "protect 应被排除，只保留 keep");
+        assert!(found[0].path.contains("keep"));
+    }
+
+    #[test]
+    fn last_active_uses_git_commit_when_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("app/package.json"), "{}");
+        touch(&tmp.path().join("app/node_modules/a.js"), "x");
+        if !git_init_commit(tmp.path()) {
+            eprintln!("跳过：系统无 git 或 init 失败");
+            return;
+        }
+        let found = scan_all(tmp.path());
+        assert_eq!(found.len(), 1);
+        // 有 git commit 时，last_active_ms 应非常接近"现在"（commit 刚发生）
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let age_secs = now_ms
+            .saturating_sub(found[0].last_active_ms.unwrap_or(0))
+            / 1000;
+        assert!(
+            age_secs < 60,
+            "git commit 时间应接近现在，实际距今 {age_secs}s"
+        );
     }
 
     #[test]

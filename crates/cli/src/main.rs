@@ -38,6 +38,12 @@ enum Cmd {
         /// 以 JSON 输出（供脚本用）
         #[arg(long)]
         json: bool,
+        /// 排除（保护）路径前缀，逗号分隔，可多次。命中的产物不扫描
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// 跳过大小计算（快速列出产物，不显示体积）
+        #[arg(long)]
+        no_size: bool,
     },
     /// 扫描并把产物目录移入回收站
     Clean {
@@ -46,6 +52,12 @@ enum Cmd {
         rules: Vec<String>,
         #[arg(long)]
         stale_days: Option<u64>,
+        /// 排除（保护）路径前缀，逗号分隔，可多次。命中的产物不扫描
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// 跳过大小计算（clean 时仍会正常删除，仅表格不显示体积）
+        #[arg(long)]
+        no_size: bool,
         /// 跳过确认
         #[arg(long, short = 'y')]
         yes: bool,
@@ -57,16 +69,16 @@ enum Cmd {
 
 fn main() {
     match Cli::parse().cmd {
-        Cmd::Scan { path, rules, stale_days, json } => {
-            let artifacts = scan_and_size(&path, &rules, stale_days);
+        Cmd::Scan { path, rules, stale_days, json, exclude, no_size } => {
+            let artifacts = scan_and_size(&path, &rules, stale_days, &exclude, no_size);
             if json {
                 println!("{}", serde_json::to_string_pretty(&artifacts).unwrap());
             } else {
                 print_table(&artifacts);
             }
         }
-        Cmd::Clean { path, rules, stale_days, yes, dry_run } => {
-            let artifacts = scan_and_size(&path, &rules, stale_days);
+        Cmd::Clean { path, rules, stale_days, exclude, no_size, yes, dry_run } => {
+            let artifacts = scan_and_size(&path, &rules, stale_days, &exclude, no_size);
             if artifacts.is_empty() {
                 println!("没有可清理的产物。");
                 return;
@@ -99,7 +111,13 @@ fn main() {
     }
 }
 
-fn scan_and_size(path: &Path, rule_ids: &[String], stale_days: Option<u64>) -> Vec<Artifact> {
+fn scan_and_size(
+    path: &Path,
+    rule_ids: &[String],
+    stale_days: Option<u64>,
+    excludes: &[String],
+    skip_size: bool,
+) -> Vec<Artifact> {
     // #6: 未知规则 id 打 warning，避免用户以为在扫某类产物实际没扫
     if !rule_ids.is_empty() {
         let known: std::collections::HashSet<&str> = dev_sweeper_core::RULES
@@ -116,13 +134,16 @@ fn scan_and_size(path: &Path, rule_ids: &[String], stale_days: Option<u64>) -> V
     let rules = select_rules(rule_ids);
     let cancel = never_cancel();
     eprintln!("扫描 {} …", path.display());
-    let mut artifacts = scan_artifacts(path, &rules, &cancel, |_| {}, |_| {});
-    compute_sizes(&mut artifacts, &cancel, |_, _| {});
+    let mut artifacts = scan_artifacts(path, &rules, &cancel, excludes, |_| {}, |_| {});
+    if !skip_size {
+        compute_sizes(&mut artifacts, &cancel, |_, _| {});
+    }
     if let Some(days) = stale_days {
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
         let cutoff = now_ms.saturating_sub(days * 24 * 3600 * 1000);
         artifacts.retain(|a| a.last_active_ms.is_some_and(|t| t < cutoff));
     }
+    // skip_size 时 size_bytes 为 None，排序时退化为按扫描顺序稳定排
     artifacts.sort_by_key(|a| std::cmp::Reverse(a.size_bytes.unwrap_or(0)));
     artifacts
 }

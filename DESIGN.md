@@ -359,10 +359,10 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [x] **Marker 扩 `ParentHasSuffix`**：处理文件名不固定的标记（.uproject/.csproj）
 - [ ] 规则表加 `risk: Risk`（🟢🟡🔴）字段，UI 着色（借鉴 ClearDisk，强化"哪些最安全删"）。
 
-### P2 — 增强信任与精度
-- [ ] **git-aware aging**：可选读 `git log -1` 的 last-commit 时间，比 mtime 更准；非 git 项目回退现状。
-- [ ] **排除/保护路径**：`--exclude`、`--protect-list`（借鉴 kondo `-I`、npkill `-E`），记忆"永不清理"的目录。
-- [ ] **扫描性能**：超大目录树的并行度调优；可选跳过 size/age 计算（npkill `--no-size` 思路）加速。
+### P2 — 增强信任与精度（已交付）
+- [x] **git-aware aging**：`last_active_ms` 融合 mtime + git 最后 commit 时间（取 max）。不引入 git2/libgit2（避免重依赖），直接调系统 `git log -1 --format=%ct`；git 不可用/非 git 项目自动回退纯 mtime。commit 时间比 mtime 更能反映真实开发活动。
+- [x] **排除/保护路径**：`scan_artifacts` 接收 `excludes: &[String]` 前缀列表，命中前缀的产物跳过（永不清理）。CLI `scan`/`clean` 加 `--exclude`（逗号分隔、可多次）。平台无关比较（统一 `/` 分隔符）。
+- [x] **扫描性能**：CLI 加 `--no-size` 跳过大小计算（快速列产物）。`--no-age` 因收益小（git log 仅在已确认产物跑、数量有限）暂不做。
 
 ### P3 — 形态与生态
 - [ ] 跨平台打包：macOS（.dmg）、Linux（AppImage/deb），目前仅 NSIS（Windows）。
@@ -411,7 +411,7 @@ dev-sweeper/
 | **规则表驱动** | 加生态零分支，单测易写。 |
 | **React 19 + Tailwind v4** | 现代前端，CSS 变量驱动的暗色 dataviz 调色板。 |
 
-## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 20 测 + 1 unix-only）
+## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 23 测 + 1 unix-only）
 
 | 测试 | 守住的属性 |
 |---|---|
@@ -437,3 +437,6 @@ dev-sweeper/
 | `dotnet_bin_obj_requires_csproj` | .NET bin/obj 靠 .csproj 后缀确认（P1，suffix marker） |
 | `unreal_uses_suffix_marker` | Unreal 靠 .uproject 后缀确认（P1，suffix marker） |
 | `generic_dir_without_marker_not_matched` | 通用名目录无 marker 一律不误判（P1 回归） |
+| `last_active_fuses_git_commit_and_mtime` | 无 git 时回退 mtime（P2 git-aware） |
+| `last_active_uses_git_commit_when_available` | 有 git 时采用 commit 时间（P2 git-aware） |
+| `scan_excludes_protected_paths` | 排除前缀命中的产物被保护（P2 exclude） |
