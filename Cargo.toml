@@ -5,6 +5,13 @@ members = ["crates/core", "crates/cli", "src-tauri"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["IKEASven69"]
+repository = "https://github.com/IKEASven69/dev-sweeper"
+homepage = "https://github.com/IKEASven69/dev-sweeper"
+description = "多生态开发产物扫描清理工具：扫描 node_modules / target / venv 等，移入回收站（可恢复）"
+keywords = ["cleanup", "disk-usage", "node_modules", "tauri", "developer-tools"]
+categories = ["filesystem", "development-tools"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

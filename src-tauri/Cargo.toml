@@ -1,9 +1,11 @@
 [package]
 name = "dev-sweeper"
 version.workspace = true
-description = "多生态开发产物扫描清理工具"
-authors = ["you"]
+description.workspace = true
+authors.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "dev_sweeper_lib"

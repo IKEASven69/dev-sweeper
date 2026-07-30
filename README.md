@@ -1,5 +1,9 @@
 # dev-sweeper
 
+[![CI](https://github.com/IKEASven69/dev-sweeper/actions/workflows/ci.yml/badge.svg)](https://github.com/IKEASven69/dev-sweeper/actions/workflows/ci.yml)
+[![Release](https://github.com/IKEASven69/dev-sweeper/actions/workflows/release.yml/badge.svg)](https://github.com/IKEASven69/dev-sweeper/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 多生态开发产物扫描清理工具：一次扫描找出所有 `node_modules`、Rust/Maven 的 `target`、Gradle 的 `build`、Python 的 `.venv` / `__pycache__`，按大小和陈旧度排序，批量**移入回收站**。
 
 桌面 GUI（Tauri 2 + React 19）+ CLI（`sweep`），共享同一个 Rust 扫描核心。
