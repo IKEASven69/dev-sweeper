@@ -1,0 +1,93 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+# 同一 release 不并发（避免覆盖产物）
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS：分 aarch64 / x86_64 两个 target（官方默认做法）
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          # Linux：默认打 deb + appimage + rpm（targets: all）
+          - platform: ubuntu-22.04
+            args: ""
+          # Windows：NSIS 安装包
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Linux 系统依赖（Tauri 2 需 webkit2gtk-4.1，不是 4.0）
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      # 前端工具链：pnpm 11 + Node 22（顺序：pnpm 先于 node，以便缓存检测）
+      - name: setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - name: setup node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Rust 工具链；macOS 需两个交叉编译 target
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # workspace 在仓库根，src-tauri 是成员；映射 target 目录
+          workspaces: "src-tauri -> target"
+
+      - name: install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 构建 + 发布到 GitHub Release
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS ad-hoc 签名（免费，无 Apple 账号）：防止 Apple Silicon 下载后报"已损坏"。
+          # 仍需用户首次右键打开（Gatekeeper）。未来换正式签名时改为证书 env。
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          # __VERSION__ 取自 tauri.conf.json 的 version（0.1.0 → tag v0.1.0）
+          tagName: v__VERSION__
+          releaseName: "dev-sweeper v__VERSION__"
+          releaseBody: |
+            多生态开发产物扫描清理工具。
+
+            **下载与安装：**
+            - **Windows**：运行 `.exe`（NSIS 安装包），首次启动会有 SmartScreen 提示，点"仍要运行"。
+            - **macOS**：拖 `.dmg` 到 Applications，首次需**右键 → 打开**（Gatekeeper），Apple Silicon 已做 ad-hoc 签名。
+            - **Linux**：`.deb`（Debian/Ubuntu）或 `.AppImage`（免安装，chmod +x 后运行）。
+
+            删除一律移入回收站，可恢复；每个产物附"如何再生"提示。
+          releaseDraft: true
+          prerelease: false
+          projectPath: src-tauri
+          args: ${{ matrix.args }}

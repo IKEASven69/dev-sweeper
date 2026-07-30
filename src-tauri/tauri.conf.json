@@ -25,10 +25,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": "all",
+    "publisher": "dev-sweeper",
+    "category": "Utility",
+    "shortDescription": "多生态开发产物扫描清理工具",
+    "longDescription": "扫描 node_modules / target / venv 等开发产物，按大小和陈旧度排序，移入回收站（可恢复）。",
     "windows": {
       "nsis": {
         "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
       }
     },
     "icon": [
