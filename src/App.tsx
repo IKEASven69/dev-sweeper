@@ -4,6 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { daysAgo, fmtDaysAgo, fmtDuration, fmtSize } from "./lib/format";
+import DepsPanel from "./DepsPanel";
+import CachesPanel from "./CachesPanel";
+import ArchivePanel from "./ArchivePanel";
+import ExcludesPanel from "./ExcludesPanel";
 
 interface Artifact {
   id: number;
@@ -97,6 +101,7 @@ export default function App() {
   const [deleting, setDeleting] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [lastReport, setLastReport] = useState<DeleteReport | null>(null);
+  const [mode, setMode] = useState<"clean" | "deps" | "caches" | "archive" | "excludes">("clean");
 
   useEffect(() => {
     const subs = [
@@ -131,6 +136,17 @@ export default function App() {
     const t = setTimeout(() => setLastReport(null), 6000);
     return () => clearTimeout(t);
   }, [lastReport]);
+
+  // 依赖面板内"选择项目目录"会派发此事件，同步到共享的 root
+  useEffect(() => {
+    function onSetRoot(e: Event) {
+      const dir = (e as CustomEvent<string>).detail;
+      setRoot(dir);
+      localStorage.setItem("root", dir);
+    }
+    window.addEventListener("dev-sweeper:set-root", onSetRoot);
+    return () => window.removeEventListener("dev-sweeper:set-root", onSetRoot);
+  }, []);
 
   // 全局键盘：Esc 关弹窗/取消扫描，Ctrl/Cmd+A 全选产物
   useEffect(() => {
@@ -312,6 +328,58 @@ export default function App() {
             </span>
             dev-sweeper
           </h1>
+          <div className="flex items-center gap-1 rounded-lg bg-[var(--surface)] border border-[var(--hairline)] p-0.5 ml-1">
+            <button
+              onClick={() => setMode("clean")}
+              className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                mode === "clean"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+              }`}
+            >
+              清理产物
+            </button>
+            <button
+              onClick={() => setMode("deps")}
+              className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                mode === "deps"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+              }`}
+            >
+              依赖瘦身
+            </button>
+            <button
+              onClick={() => setMode("caches")}
+              className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                mode === "caches"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+              }`}
+            >
+              全局缓存
+            </button>
+            <button
+              onClick={() => setMode("archive")}
+              className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                mode === "archive"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+              }`}
+            >
+              压缩归档
+            </button>
+            <button
+              onClick={() => setMode("excludes")}
+              className={`px-3 py-1 rounded-md text-sm transition-colors ${
+                mode === "excludes"
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+              }`}
+            >
+              排除路径
+            </button>
+          </div>
           <div className="flex-1" />
           <button
             onClick={pickDir}
@@ -349,6 +417,16 @@ export default function App() {
               取消
             </button>
           )}
+          {mode === "deps" && (
+            <button
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("dev-sweeper:analyze"))
+              }
+              className="px-4 py-1.5 rounded-lg bg-[var(--accent)] hover:brightness-110 text-sm font-medium"
+            >
+              分析依赖
+            </button>
+          )}
         </div>
 
         {cancelled && (
@@ -357,6 +435,8 @@ export default function App() {
           </div>
         )}
 
+        {mode === "clean" && (
+        <>
         {/* 统计卡片 */}
         <div className="flex gap-3">
           <StatTile
@@ -453,11 +533,21 @@ export default function App() {
               >
                 清空
               </button>
+              <button
+                onClick={() => setMode("excludes")}
+                className="hover:text-[var(--ink-1)] underline"
+              >
+                管理 →
+              </button>
             </div>
           )}
         </div>
+        </>
+        )}
       </header>
 
+      {mode === "clean" && (
+      <>
       {/* 操作条 */}
       {artifacts.length > 0 && (
         <div className="flex items-center gap-3 px-6 pb-2 text-sm">
@@ -746,6 +836,14 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      </>
+      )}
+      {mode === "deps" && <DepsPanel projectDir={root} />}
+      {mode === "caches" && <CachesPanel />}
+      {mode === "archive" && <ArchivePanel projectDir={root} />}
+      {mode === "excludes" && (
+        <ExcludesPanel excludes={excludes} onChange={setExcludes} />
       )}
     </div>
   );
