@@ -32,3 +32,6 @@ src-tauri/gen/schemas/
 
 # 工具生成的临时文件
 tdtree.json
+
+_atest/
+
