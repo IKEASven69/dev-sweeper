@@ -21,12 +21,27 @@
 - 标记文件确认（`package.json` / `Cargo.toml` / `pyvenv.cfg` …），防止误删同名目录。
 - 现代跨平台桌面 GUI，而非终端 TUI 或老旧 GUI。
 
-### 1.3 非目标
+### 1.3 定位：跨生态、全舰队、可逆的空间回收器
+
+> **一句话定位**：唯一一个跨所有语言、按陈旧度排序、只碰可重建产物且全程可逆的开发者空间回收器。
+
+删 `node_modules` 这种单点动作是 commodity（ncdu + 一行脚本即可）。dev-sweeper 的差异化合在**五件事同时成立**：
+
+1. **跨生态**：Node / Rust / Java / Go / Python / .NET … 一次扫描全包（规则表驱动，加生态 = 加一行）。
+2. **全舰队一扫**：对整个 dev 目录/工作区批量扫描，而非一次盯一个项目——手动逐个清不现实。
+3. **按陈旧度排序**：优先回收半年没碰的项目，昨天改过的碰都不碰（比 kondo 的整树 mtime 更准，并融合 git commit 时间）。
+4. **只碰可重建产物**：节点_modules / target / build / .venv / __pycache__ / 各语言全局缓存——一切"能靠 lockfile / 命令重建"的东西；**永不碰源码**。
+5. **全程可逆**：删除一律进回收站，依赖裁剪先备份清单，迁移先移旧产物入回收站。
+
+其中 (3) 与 (4) 的组合（"陈旧度 × 可重建性"排序）是最锋利、竞品都没做的点；(5) 是信任基石。
+
+### 1.4 非目标
 
 - **不做**永久删除（`rm -rf`）—— 即使高级用户也走回收站。
-- **不做**全局缓存清理（`npm cache`、`pnpm store prune`、`cargo-cache`、`~/.gradle/caches`）—— 那是另一类工具的职责；dev-sweeper 聚焦"项目内可再生产物"。
-- **不做**依赖分析（depcheck / knip 的"未使用依赖"）—— 只关心磁盘占用。
+- ~~**不做**全局缓存清理~~ → **已转为目标**：见 §7.6 「清全局缓存」。各语言包管理器的全局共享缓存（npm/pip/cargo/maven/gradle/go/uv/pnpm）不在项目内、普通清理碰不到，且清了只是重下——是"其他生态依赖"占盘的通用省盘杠杆，与项目内产物清理互补。
+- ~~**不做**依赖分析~~ → **已转为目标（v1 Node）**：见 §7 依赖裁剪（"重构依赖"）。现可找出 `package.json` 中声明但源码从未引用的依赖并精准移除，而不只是整包删 `node_modules`。
 - **不做**隐私擦除 / 系统垃圾清理（BleachBit 的领地）。
+- ~~**不做压缩归档**~~ → **已转为目标**：见 §7.7 「压缩归档」。把沉睡项目整体压成 `.tar.gz`、原项目移入回收站——这是"不删也能瘦"的核心落地：活的项目的源码不删，只是压成可恢复副本移出工作区，清回收站即真正释放；正好把 §1.3 的"陈旧度排序"用起来（沉睡最久的优先回收）。
 
 ---
 
@@ -62,6 +77,8 @@
 - **vs kondo**（2.3k★，incumbent）：生态最广、架构好（lib/bin 分离），但 **6 年来永久删除**、aging 用整棵树最新 mtime（一个日志文件就能让陈旧项目"显得活跃"）。dev-sweeper 的回收站 + 更准的 aging 模型正中其软肋。
 - **vs npkill**（9.4k★，最流行）：纯目录名匹配无 marker 确认（`target`/`build`/`obj` 易误报）、永久删除、无 age 过滤（issue #257 开放中）。未发布的 `main` 虽扩到 17 profile 但**浅**（不区分 Rust `target` 和 Java `target`）。dev-sweeper 的 marker 确认 + 默认回收站直接对应其用户已在 issue 里提的需求（#60 要 trash）。
 - **vs ClearDisk**（**最接近的对手**）：产品主张几乎一致（多生态 + 回收站 + 再生提示 + 原生 GUI），其作者已验证了这个 thesis。**唯一软肋是 macOS-only**。dev-sweeper 的机会窗口：**做跨平台的 ClearDisk**——Win/Linux 开发者在这个品类里除了永久删除的脚本一无所有。
+
+> **补充（2026-07 定位重定）**：在"跨平台 + 多生态 + 回收站"之上，真正的护城河是**五合一组合**——跨生态 × 全舰队一扫 × 陈旧度排序 × 只碰可重建物 × 全程可逆。竞品（DaisyDisk/ncdu 只给大小不懂生态；cargo clean/npm prune 一次一项目；CleanMyMac 不懂开发者语义）最多占其中一两格。最锋利的两点是「陈旧度 × 可重建性」排序与「数学上删不到源码」的安全人设。
 
 ### 2.4 竞品启示录（将转化为路线图）
 
@@ -119,6 +136,16 @@
 |---|---|---|---|
 | `scan` | `{ root: String, ruleIds: Vec<String> }` | `ScanSummary { count, totalBytes, elapsedMs }` | 每发现一个产物 emit `scan:found`；每个大小算完 emit `scan:size`；结束 emit `scan:done` |
 | `delete_artifacts` | `{ paths: Vec<String> }` | `DeleteReport { deleted, failed }` | 每删一个 emit `delete:progress` |
+| `analyze_deps` | `{ projectDir: String }` | `DepReport { eco, pm, declaredCount, usedCount, unused, extraneous, notes }` | — |
+| `prune_deps` | `{ projectDir, remove: Vec<String>, dryRun: bool }` | `PruneReport { removed, freedBytes, backupPath, failed }` | — |
+| `migrate_to_pnpm` | `{ projectDir, dryRun: bool }` | `MigrateReport { fromPm, freedBytes, backupPath, reinstalled, error }` | — |
+| `migrate_to_uv` | `{ projectDir, dryRun: bool }` | `MigratePyReport { fromPm, freedBytes, backupPath, reinstalled, error }` | — |
+| `discover_caches` | — | `Vec<CacheEntry> { id, eco, label, path, sizeBytes, regenHint, risk }` | — |
+| `purge_cache` | `{ id: String, dryRun: bool }` | `CachePurgeReport { id, path, freedBytes, reinstallable, error }` | — |
+| `discover_archivable` | `{ root: String, staleDays: u64 }` | `Vec<ArchivableProject> { name, path, sizeBytes, lastActiveMs, isGit }` | — |
+| `archive_project` | `{ dir: String, archiveDir: String, dryRun: bool }` | `ArchiveReport { name, archiveFile, originalSize, compressedSize, freedBytes, removedOriginal, error }` | — |
+| `list_archives` | `{ archiveDir: String }` | `Vec<ArchiveFile> { name, path, sizeBytes, projectName, createdAt }` | — |
+| `restore_archive` | `{ file: String, destRoot: String, dryRun: bool }` | `RestoreReport { archiveFile, restoredTo, restoredBytes, error }` | — |
 
 **事件流**（`listen`）—— 这是"扫描条目实时流入、大小渐进填充"体验的关键：
 
@@ -305,6 +332,9 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 
 - `scan`：`scan_artifacts` 的 `on_found` → `app.emit("scan:found", a)`；`compute_sizes` 的 `on_sized` → `emit("scan:size", ...)`。
 - `delete_artifacts`：循环 `delete_to_trash`，每步 `emit("delete:progress", ...)`，最终返回 `DeleteReport`。
+- `analyze_deps` / `prune_deps` / `migrate_to_pnpm`：依赖分析、裁剪、pnpm 迁移（见 §7 / §7.5），均无事件流，直接返回报告。
+- `discover_caches` / `purge_cache`：全局缓存发现与清理（见 §7.6）。
+- `discover_archivable` / `archive_project` / `list_archives` / `restore_archive`：沉睡项目发现、压缩归档、归档库列举、还原（见 §7.7），均无事件流，直接返回报告。
 
 能力声明（`capabilities/default.json`）：`core:default` + `opener:allow-reveal-item-in-dir`（"在资源管理器打开"按钮）+ `dialog:default`（目录选择器）。最小权限。
 
@@ -353,6 +383,11 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [x] **删除前 marker 重校验**：`validate_marker` 反查规则 + 重跑 marker（见 §4.3.1），修了原"只校验末段"的弱点。
 - [x] **dry-run 模式**：`sweep clean -n` / `delete_to_trash_dry_run`（借鉴 kondo `-n`、npkill `--dry-run`）。
 - [x] **trash-only 显式语义**：`delete.rs` 顶部文档注释写死安全不变量——只走 `trash::delete`，无 `remove_dir_all` 路径，不提供"永久删除"开关。
+- [x] **依赖裁剪（"重构依赖"）**：`crates/core/src/deps.rs` 的 `analyze_deps` / `prune_deps`，CLI `sweep deps`，GUI "依赖瘦身"标签页（见 §7）。精准移除未使用依赖，而非整包删 node_modules。
+- [x] **pnpm 迁移**：`deps.rs` 的 `detect_pm` / `migrate_to_pnpm`，CLI `sweep migrate`，GUI "迁移到 pnpm"入口（见 §7.5）。npm/yarn 项目迁移到 pnpm 内容寻址存储，跨项目去重省盘。
+- [x] **uv 迁移（Python 版 pnpm）**：`crates/core/src/uv.rs` 的 `detect_pypm` / `migrate_to_uv`，CLI `sweep uv-migrate`，Tauri `migrate_to_uv` 命令（GUI 入口可后续接入 DepsPanel）。pip/poetry/pip-tools 项目迁移到 uv 全局内容寻址缓存 + 硬链接 venv，跨项目去重省盘——"不删也能瘦"在 Python 侧的对称杠杆（见 §7.5.1）。
+- [x] **清全局缓存（通用省盘层）**：`crates/core/src/caches.rs` 的 `discover_global_caches` / `purge_cache`，CLI `sweep caches`，GUI "全局缓存"标签页（见 §7.6）。跨生态清理 npm/pip/cargo/maven/gradle/go/uv/pnpm 全局缓存，回答"其他生态依赖怎么省盘"——只动白名单内全局缓存、一律走回收站。
+- [x] **压缩归档（"不删也能瘦"）**：`crates/core/src/archive.rs` 的 `discover_archivable` / `archive_project` / `list_archives` / `restore_archive`，CLI `sweep archives` / `sweep archive` / `sweep restore`，GUI "压缩归档"标签页（见 §7.7）。把沉睡项目整体压成 .tar.gz、原项目移入回收站——源码不丢、随时可还原，正好把"陈旧度排序"用起来。
 
 ### P1 — 扩生态广度（已交付，17 类）
 - [x] CMake（`build`, `cmake-build-*`，marker `CMakeLists.txt`）
@@ -373,7 +408,7 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 - [ ] 跨平台打包：macOS（.dmg）、Linux（AppImage/deb），目前仅 NSIS（Windows）。
 - [ ] `core` 作为库发布到 crates.io（对标 kondo-lib 的可集成性）。
 - [ ] VS Code 扩展 / CI 集成（复用 `core`）。
-- [ ] 全局缓存清理（可选模块，明确与项目产物清理分区）。
+- [x] **全局缓存清理**：已交付（见 §7.6），与项目产物清理明确分区、共用回收站安全底线。
 
 ### 风险与防御
 - **ClearDisk 可能移植到 Win/Linux**——其 63 路径知识库已成型，移植可行。**防御**：抢跨平台首发 + 做 Windows 原生体验（右键菜单 / Storage Sense 集成 / MFT 级快速扫描）。
@@ -381,22 +416,114 @@ sweep clean <path> [...] [--stale-days 180] [-y]
 
 ---
 
-## 7. 项目结构
+## 7. 依赖裁剪（"重构依赖"）
+
+> 动机：呼应"如果整包删了依赖，用户用什么"——dev-sweeper 不该只会删 `node_modules`，还应能**精准瘦身**：找出 `package.json` 里声明了但源码从未 `import` 的依赖，让用户移除它们而项目照跑。这与"只关心磁盘占用"的旧定位互补——清理产物管"占盘"，依赖裁剪管"清单臃肿"。
+
+### 7.1 范围（v1）
+
+- **Node 生态**：解析 `package.json` 的 `dependencies` / `devDependencies`，扫描源码 `import` / `require` / 动态 `import()`，算出**未使用依赖**与 **node_modules 多余目录**。
+- 其他生态（Rust `cargo udeps`、Python `pip-autoremove` / `pip-check`）判定方式不同，后续按本模块结构扩展（与"加生态 = 加一行"一致）。
+
+### 7.2 架构
+
+- **`crates/core/src/deps.rs`**（纯分析，只读，不启动子进程，保持 core 无 IO 框架）：
+  - `analyze_deps(dir) -> DepReport`：解析清单 + 扫描源码 import（正则提取说明符 → 解析为顶层包名），产出 `unused`（声明未引用）与 `extraneous`（node_modules 有但清单无）。
+  - 置信度 `DepConfidence`：**`High`**＝运行期依赖从未被 import，几乎可移除；**`Review`**＝开发依赖常仅由 CLI / 配置（eslint、vite、tsc…）使用，需人工确认。
+  - `prune_deps(dir, remove, dry_run) -> PruneReport`：从 `package.json` 移除指定依赖（先写 `package.json.sweep.bak` 备份），并把对应 `node_modules/<pkg>` 目录**移入回收站**（可恢复，与 `delete.rs` 同一安全底线：永不 `remove_dir_all`）。
+- **CLI**：`sweep deps <path>` 列出未使用 / 多余依赖；`--apply` 确认后移除（含 `--json`）。`sweep migrate <path>` 把 npm/yarn 项目迁移到 pnpm（`-n` 预演、`-y` 跳过确认）。
+- **Tauri**：`analyze_deps` / `prune_deps` / `migrate_to_pnpm` 命令；前端"依赖瘦身"标签页（`src/DepsPanel.tsx`）展示未使用依赖（带置信度徽标）、多余目录提示、当前包管理器标识，勾选后"重构依赖"或"迁移到 pnpm"（均含预演与确认弹窗）。
+
+### 7.3 安全
+
+- 分析只读不写；裁剪先备份清单再改，绝不直接覆盖。
+- 依赖目录走回收站，误删可恢复。
+- 开发依赖一律标 **需复核**，引导用户确认未被 CLI / 配置引用，降低误删运行所需依赖的风险。
+
+### 7.4 已知局限
+
+- 仅 Node；import 扫描基于正则，可能漏掉动态 `require`、模板字符串拼接、编译期注入的依赖；`Review` 项需人工判断。
+- `extraneous` 检测为**信息性**（可能含合法的传递依赖），权威判定交给 `npm prune` / `pnpm prune`，工具仅提示。
+
+### 7.5 pnpm 迁移（省盘杠杆）
+
+> 动机：呼应"npm 安装的，可以通过 pnpm 安装瘦身"——dev-sweeper 扫到大量项目时，每个项目一份扁平 `node_modules` 是巨大的磁盘浪费。pnpm 用**内容寻址的全局存储**（`~/.pnpm-store`），同一份包在多个项目间只存一份，跨项目去重即省盘。这是 dev-sweeper 的"项目内产物清理"之外，跨项目维度的核心省盘杠杆。
+
+- **包管理器识别** `detect_pm(dir) -> PmKind`：按锁文件优先级 `pnpm-lock.yaml` > `yarn.lock` > `package-lock.json` 识别（并存时以 pnpm 为准）。`DepReport.pm` 字段透出，前端据此显示"迁移到 pnpm"入口。
+- **迁移动作** `migrate_to_pnpm(dir, dry_run) -> MigrateReport`：
+  1. 仅当检测到 npm / yarn 锁文件才允许（Unknown 拒绝；已是 pnpm 直接拒绝）。
+  2. `dry_run` 只报告"会做什么"，不移动不安装。
+  3. 非空跑：先把旧 `node_modules` 与旧锁文件（`package-lock.json` / `yarn.lock`）**移入回收站**以立即释放磁盘（可恢复），再运行 `pnpm import`（基于已有 lockfile 生成 `pnpm-lock.yaml`）+ `pnpm install`。
+  4. 安装命令优先全局 `pnpm`，spawn 失败（未安装）时回退 `npx --yes pnpm`，降低使用门槛。
+- **安全**：与 `delete.rs` 同一底线——删除一律走回收站；`pnpm install` 失败时旧 `node_modules` 已在回收站可恢复，用户可手动 `pnpm install` 收尾，不存在"删了装不回"的死角。
+- **CLI**：`sweep migrate <path>`（`-n` 预演、`-y` 跳过确认）。
+- **Tauri / GUI**：`migrate_to_pnpm` 命令；前端在 `pm ∈ {npm, yarn}` 时显示"迁移到 pnpm"卡片，含预演与确认弹窗；迁移成功后刷新分析以更新 `pm` 标识。
+- **测试**：`detect_pm_identifies_lockfiles`（锁文件优先级）、`migrate_rejects_unknown_pm` / `migrate_rejects_already_pnpm`（不安全拒绝）、`migrate_dry_run_reports_action`（预演）、`migrate_runs_when_pnpm_available`（条件跳过：仅当系统装了 pnpm 才真跑，校验 `pnpm-lock.yaml` 离线生成）。
+
+#### 7.5.1 uv 迁移（Python 版 pnpm，省盘杠杆）
+
+> 动机：与 §7.5 完全对称——`uv` 是 Python 版 pnpm：用**全局内容寻址缓存**（`~/.cache/uv`），并把每个 venv 的 `site-packages` 以**硬链接**方式指向缓存里的 wheel，从而跨项目去重。传统 `python -m venv` + `pip install` 会在每个项目里**物理拷贝**一份包（真实占盘）；迁移到 uv 后，单项目足迹≈硬链接 + 少量 `.pyc`，全局缓存只存一份——这正是 pnpm 对 Node 做的事。
+
+- **包管理器识别** `detect_pypm(dir) -> PyPmKind`：按 `uv.lock` > `poetry.lock` > (`requirements.in` + `requirements.txt`) > (`requirements.txt` / `pyproject.toml` / `setup.py`) 识别为 `Uv` / `Poetry` / `PipTools` / `Pip` / `Unknown`。
+- **迁移动作** `migrate_to_uv(dir, dry_run) -> MigratePyReport`：
+  1. 仅当检测到 Python 项目（requirements.txt / pyproject.toml / setup.py）才允许（Unknown 拒绝；已是 uv 直接拒绝）。
+  2. **前置守卫**：`uv_available()` 为假时直接返回 `Err`，**不移动任何文件**（uv 迁移边界更多——可编辑安装、解释器版本、锁文件语义——故比 pnpm 更保守，破坏性操作仅在确认 uv 可用后才发生）。
+  3. 非空跑：先把旧 `.venv` **移入回收站**以立即释放磁盘（可恢复），再 `uv venv` 建硬链接 venv，并按清单安装：`pyproject.toml` → `uv sync`（生成 `uv.lock`）、`requirements.txt` → `uv pip install -r requirements.txt`、`setup.py` → `uv pip install -e .`。
+- **安全**：与 `migrate_to_pnpm` 同一底线——删除一律走回收站；`uv sync` / `uv pip install` 失败时旧 `.venv` 已在回收站可恢复。无 uv 时零破坏（前置守卫）。
+- **CLI**：`sweep uv-migrate <path>`（`-n` 预演、`-y` 跳过确认）。
+- **Tauri / GUI**：`migrate_to_uv` 命令已提供（GUI 入口可后续接入 DepsPanel）。
+- **测试**：`detect_pypm_basics`（识别四种 PM）、`migrate_rejects_non_python` / `migrate_rejects_already_uv`（不安全拒绝）、`migrate_dry_run_reports_action`（预演）、`migrate_guards_without_uv`（条件跳过：无 uv 时返回 Err 且不创建 `.venv`，零破坏）。
+
+### 7.6 清全局缓存（通用省盘杠杆）
+
+> 动机：呼应"pnpm 只能去重 node，那其他生态依赖怎么办"——Node 是唯一默认不跨项目去重的（每个项目一份扁平 node_modules）；而 **JVM（~/.m2 / ~/.gradle）、Go（GOPATH/pkg/mod）、Rust（~/.cargo，源码已全局共享）的依赖默认就全局共享**；Python 的 `uv` 是 Python 版 pnpm。因此"其他生态依赖占盘"的通用答案不是迁移，而是**清各语言包管理器的全局缓存**——它们都在项目之外、清了只是重下、不丢源码。这是与"项目内产物清理"互补的、跨生态通用的省盘层。
+
+- **白名单** `crates/core/src/caches.rs`（`discover_global_caches`）：维护跨生态全局缓存清单（逐平台多路径提示，取第一个存在的），覆盖 `node-npm-cache` / `rust-cargo-registry` / `rust-cargo-git` / `java-maven` / `java-gradle` / `go-mod` / `python-pip` / `python-uv` / `pnpm-store`。
+- **路径解析**：`~` 与 `${KEY}` 占位符按 `home` + 环境变量表解析；环境变量缺失时回退到各包管理器的"默认位置"（如 `CARGO_HOME`→`~/.cargo`、`GOPATH`→`~/go`、`M2_REPO`→`~/.m2/repository`）。
+- **清理动作** `purge_cache(id, dry_run) -> CachePurgeReport`：先算 `freed_bytes`（置于 trash 之前），再 `trash::delete` 移入回收站（可恢复，与 `delete.rs` 同一安全底线）；`dry_run` 只报告。
+- **风险分级**：纯下载缓存（npm/pip/cargo/gradle/maven/go）标 `safe`；会损失跨项目去重或需重装的（uv / pnpm store）标 `notice`——前端据此显示 🟢/🟡 徽标，引导用户"清 pnpm store 会暂时失去去重收益"。
+- **安全**：发现阶段只列存在的缓存、不删；清理只动白名单内的全局缓存目录（非任意路径），一律走回收站。
+- **CLI**：`sweep caches` 列出全部（含大小/风险/路径，`--json` 供脚本）；`--id <id>` 清理指定（可重复）、`--apply` 清理全部；`-n` 预演。非交互终端（无 TTY）不弹确认，需显式 `-n` / `--json`。
+- **Tauri / GUI**：`discover_caches` / `purge_cache` 命令；前端"全局缓存"标签页（`src/CachesPanel.tsx`）自动发现、勾选后"清理全部/清理选中"（含预演与确认弹窗）。
+- **测试**：`resolve_expands_tilde_and_vars`（路径解析）、`discover_returns_unique_ids`（发现不重复）、`purge_path_dry_run_touches_nothing`（预演不动）、`purge_path_real_does_not_panic`（真实跑不 panic，沙箱无回收站时优雅报错）。
+
+### 7.7 压缩归档（"不删也能瘦"）
+
+> 动机：呼应"活的又不能删，只能压缩"——dev-sweeper 不该只会删产物或只管依赖，还应能**把整个沉睡项目压成可恢复的归档**，让源码留着（可还原）却不再占工作区的即时空间。配合"按陈旧度排序"，把"睡得最久的项目优先回收"这个差异化卖点真正落地。
+
+- **发现沉睡项目** `discover_archivable(root, min_stale_days) -> Vec<ArchivableProject>`：扫描 root 下一级子目录（跳隐藏目录、符号链接、非目录），按"最后活跃时间"升序（最旧在前）；`min_stale_days` 过滤只返回超过 N 天未活跃的项目（0 = 全部）。
+- **归档动作** `archive_project(dir, archive_dir, dry_run) -> ArchiveReport`：
+  1. `dry_run` 只报告"会打包 + 释放多少"，不写文件不删项目。
+  2. 非空跑：把整个项目打成 `<name>@<日期>.tar.gz`（tar + gzip），写入 `archive_dir`（默认 `~/dev-archives`）；再 `trash::delete` 把**原项目移入回收站**（可恢复，与 `delete.rs` 同一安全底线）。归档文件本身也是一份可恢复副本。
+  3. 要真正释放磁盘，用户清空回收站即可（与"删 node_modules"行为统一）——归档不含源码，还原随时可用。
+- **归档库管理** `list_archives(archive_dir)` 列举已有 `.tar.gz`；**还原** `restore_archive(file, dest_root, dry_run)`：把归档解回 `dest_root/<project_name>`（已存在则报错避免覆盖），`dry_run` 只校验。
+- **安全**：归档只读写指定目录，绝不强删；原项目走回收站；归档文件名带日期便于追溯。
+- **CLI**：
+  - `sweep archives --root <dir> [--stale-days N]` 发现沉睡项目（列表 / `--json`）；
+  - `sweep archive <path> [--archive-dir DIR] [-n] [-y]` 归档单个项目；
+  - `sweep restore <file> [--dest DIR] [-n]` 解回。
+- **Tauri / GUI**：`discover_archivable` / `archive_project` / `list_archives` / `restore_archive` 命令；前端"压缩归档"标签页（`src/ArchivePanel.tsx`）展示沉睡项目（按陈旧度）、勾选后归档，并管理归档库（列出 + 一键还原），均含预演与确认弹窗。
+- **测试**：`discover_skips_hidden_symlinks_and_files`（跳隐藏/符号链接/文件）、`discover_excludes_fresh_when_stale_filter`（陈旧阈值过滤）、`archive_and_restore_roundtrip`（打包→列出→还原、文件完整）、`restore_dry_run_does_nothing`（预演不动）、`parse_names`（文件名解析）。
+
+## 8. 项目结构
 
 ```
 dev-sweeper/
 ├── Cargo.toml                 # workspace: core / cli / src-tauri
 ├── crates/
 │   ├── core/                  # 扫描/删除核心（walkdir + rayon + trash），规则表驱动，单测在此
-│   │   └── src/{lib,rules,scan,delete}.rs
+│   │   └── src/{lib,rules,scan,delete,deps,caches,archive}.rs
 │   └── cli/                   # sweep 命令（clap）
 │       └── src/main.rs
-├── src-tauri/                 # Tauri 壳：scan/delete_artifacts 命令 + 事件流
+├── src-tauri/                 # Tauri 壳：scan/delete_artifacts/analyze_deps/prune_deps/migrate_to_pnpm/migrate_to_uv/discover_caches/purge_cache/discover_archivable/archive_project/list_archives/restore_archive 命令 + 事件流
 │   ├── src/{lib,main}.rs
 │   ├── tauri.conf.json
 │   └── capabilities/default.json
 ├── src/                       # React 前端（Tailwind v4）
-│   ├── App.tsx
+│   ├── App.tsx                # 顶栏 + 模式切换（清理产物 / 依赖瘦身 / 全局缓存 / 压缩归档）
+│   ├── DepsPanel.tsx          # "依赖瘦身"标签页
+│   ├── CachesPanel.tsx        # "全局缓存"标签页
+│   ├── ArchivePanel.tsx       # "压缩归档"标签页
 │   ├── lib/format.ts
 │   └── {main.tsx,index.css}
 ├── README.md
@@ -416,7 +543,40 @@ dev-sweeper/
 | **规则表驱动** | 加生态零分支，单测易写。 |
 | **React 19 + Tailwind v4** | 现代前端，CSS 变量驱动的暗色 dataviz 调色板。 |
 
-## 附录 B：测试矩阵（`crates/core/src/lib.rs` 现有 23 测 + 1 unix-only）
+## 附录 B：测试矩阵（core crate 现有 44 测，lib.rs 23 + deps.rs 12 + caches.rs 4 + archive.rs 5；其中 1 unix-only）
+
+`lib.rs` 扫描/删除相关（见上表）。`deps.rs` 依赖裁剪与 pnpm 迁移相关：
+
+| 测试 | 守住的属性 |
+|---|---|
+| `resolve_package_name_basics` | 相对/绝对/内置/URL → None；scope 包取前两段 |
+| `extract_import_specifiers_variants` | import/require/动态 import 各种写法均提取 |
+| `analyze_finds_unused_runtime_dep` | 运行期未使用→High、开发期未使用→Review |
+| `analyze_reports_extraneous` | node_modules 顶层多余目录被识别 |
+| `prune_removes_from_manifest_and_trashes_dir` | 裁剪改写清单 + 写 .bak + 移回收站 |
+| `prune_dry_run_touches_nothing` | 预演不写文件不移动 |
+| `analyze_rejects_non_node` | 非 Node 项目返回 Err |
+| `detect_pm_identifies_lockfiles` | pnpm-lock > yarn.lock > package-lock 优先级 |
+| `migrate_rejects_unknown_pm` | 无锁文件拒绝迁移 |
+| `migrate_rejects_already_pnpm` | 已是 pnpm 拒绝迁移 |
+| `migrate_dry_run_reports_action` | 预演只报告动作 |
+| `migrate_runs_when_pnpm_available` | 条件跳过：装了 pnpm 才跑，校验 pnpm-lock.yaml 生成 |
+| `detect_pypm_basics` | 识别 pip/uv/poetry/pip-tools |
+| `migrate_rejects_non_python` | 非 Python 项目拒绝迁移 |
+| `migrate_rejects_already_uv` | 已是 uv 拒绝迁移 |
+| `migrate_guards_without_uv` | 无 uv 前置守卫拒绝且不创建 .venv |
+| `resolve_expands_tilde_and_vars` | `~` 与 `${KEY}` 占位符解析正确 |
+| `discover_returns_unique_ids` | 发现的全局缓存 id 不重复 |
+| `purge_path_dry_run_touches_nothing` | 预演算大小但不移动 |
+| `purge_path_real_does_not_panic` | 真实清理不 panic，沙箱无回收站时优雅报错 |
+
+| 测试 | 守住的属性 |
+|---|---|
+| `discover_skips_hidden_symlinks_and_files` | 跳隐藏/符号链接/文件，只留下正常项目目录 |
+| `discover_excludes_fresh_when_stale_filter` | 陈旧阈值过滤掉刚创建的项目 |
+| `archive_and_restore_roundtrip` | 打包→列出→还原完整、压缩产出有效 |
+| `restore_dry_run_does_nothing` | 预演只校验不写 |
+| `parse_names` | 归档文件名解析出项目名/日期 |
 
 | 测试 | 守住的属性 |
 |---|---|

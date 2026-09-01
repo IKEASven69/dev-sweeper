@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-01
+
+### 新增
+- Archive：沉睡项目发现（`sweep archives`）+ 压缩归档/还原（`sweep archive`/`restore`），GUI `ArchivePanel`
+- Caches：全局缓存发现与清理（npm/pip/cargo/maven/gradle/go/uv/pnpm），GUI `CachesPanel`
+- Deps：未使用依赖分析与瘦身（`sweep deps`），GUI `DepsPanel`
+- UvMigrate：pip/poetry → uv 迁移（`sweep uv-migrate`）
+
+### 改进
+- 新增 `regex` 依赖，规则匹配增强
+- DESIGN.md / README.md 同步更新（排除路径、风险等级说明）
+
 ## [0.1.0] — 2026-07
 
 首个可用版本。多生态开发产物扫描清理工具，删除一律移入回收站（可恢复）。

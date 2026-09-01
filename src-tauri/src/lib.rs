@@ -7,6 +7,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use dev_sweeper_core as core;
+use dev_sweeper_core::{
+    ArchiveFile, ArchiveReport, ArchivableProject, CacheEntry, CachePurgeReport, DepReport,
+    MigratePyReport, MigrateReport, PruneReport, RestoreReport,
+};
 
 /// 当前扫描的取消标志。同一时刻只允许一个 scan 进行；新 scan 开始时重置。
 /// 用 Arc 让 scan 线程（spawn_blocking）持有副本，cancel_scan 命令通过 State 置位。
@@ -157,13 +161,147 @@ async fn delete_artifacts(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn analyze_deps(project_dir: String) -> Result<DepReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::analyze_deps(Path::new(&project_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn prune_deps(
+    project_dir: String,
+    remove: Vec<String>,
+    dry_run: bool,
+) -> Result<PruneReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::prune_deps(Path::new(&project_dir), &remove, dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn migrate_to_pnpm(
+    project_dir: String,
+    dry_run: bool,
+) -> Result<MigrateReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::migrate_to_pnpm(Path::new(&project_dir), dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn migrate_to_uv(
+    project_dir: String,
+    dry_run: bool,
+) -> Result<MigratePyReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::migrate_to_uv(Path::new(&project_dir), dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn discover_caches() -> Result<Vec<CacheEntry>, String> {
+    let caches = tauri::async_runtime::spawn_blocking(dev_sweeper_core::discover_global_caches)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(caches)
+}
+
+#[tauri::command]
+async fn purge_cache(id: String, dry_run: bool) -> Result<CachePurgeReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::purge_cache(&id, dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn discover_archivable(
+    root: String,
+    stale_days: u64,
+) -> Result<Vec<ArchivableProject>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::discover_archivable(Path::new(&root), stale_days)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn archive_project(
+    dir: String,
+    archive_dir: String,
+    dry_run: bool,
+) -> Result<ArchiveReport, String> {
+    let adir = if archive_dir.is_empty() {
+        dev_sweeper_core::default_archive_dir()
+    } else {
+        archive_dir
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::archive_project(Path::new(&dir), Path::new(&adir), dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_archives(archive_dir: String) -> Result<Vec<ArchiveFile>, String> {
+    let adir = if archive_dir.is_empty() {
+        dev_sweeper_core::default_archive_dir()
+    } else {
+        archive_dir
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::list_archives(Path::new(&adir))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn restore_archive(
+    file: String,
+    dest_root: String,
+    dry_run: bool,
+) -> Result<RestoreReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::restore_archive(Path::new(&file), Path::new(&dest_root), dry_run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage::<CancelSlot>(Arc::new(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan, cancel_scan, delete_artifacts])
+        .invoke_handler(tauri::generate_handler![
+            scan,
+            cancel_scan,
+            delete_artifacts,
+            analyze_deps,
+            prune_deps,
+            migrate_to_pnpm,
+            migrate_to_uv,
+            discover_caches,
+            purge_cache,
+            discover_archivable,
+            archive_project,
+            list_archives,
+            restore_archive
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,8 +1,26 @@
+pub mod archive;
+pub mod caches;
 pub mod delete;
+pub mod deps;
 pub mod rules;
 pub mod scan;
+pub mod uv;
 
+pub use caches::{
+    discover_global_caches, purge_cache, CacheEco, CacheEntry, CachePurgeReport,
+};
+pub use archive::{
+    archive_project, default_archive_dir, discover_archivable, list_archives, restore_archive,
+    ArchiveFile, ArchiveReport, ArchivableProject, RestoreReport,
+};
 pub use delete::{delete_to_trash, delete_to_trash_dry_run, validate_artifact_path};
+pub use deps::{
+    analyze_deps, detect_eco, detect_pm, migrate_to_pnpm, prune_deps, DepConfidence, DepEntry,
+    DepKind, DepReport, DepStatus, Eco, MigrateReport, PmKind, PruneReport,
+};
+pub use uv::{
+    detect_pypm, migrate_to_uv, MigratePyReport, PyPmKind,
+};
 pub use rules::{select_rules, validate_marker, CleanRule, Marker, Risk, RULES};
 pub use scan::{compute_sizes, dir_size, scan_artifacts, Artifact};
 

@@ -16,6 +16,10 @@ serde_json.workspace = true
 walkdir.workspace = true
 rayon.workspace = true
 trash.workspace = true
+regex.workspace = true
+tar = "0.4"
+flate2 = "1"
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

@@ -91,3 +91,64 @@ jobs:
           prerelease: false
           projectPath: src-tauri
           args: ${{ matrix.args }}
+
+  # 纯 CLI 二进制（sweep），供 agent skill / 无 GUI 环境直接下载使用。
+  # 挂在 GUI release 同一个 tag 下，作为额外资产上传。
+  publish-cli:
+    name: sweep CLI (${{ matrix.platform }})
+    needs: publish-tauri
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            os-name: linux-x86_64
+          - platform: windows-latest
+            os-name: windows-x86_64
+          - platform: macos-latest
+            os-name: darwin-universal
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: build & package (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cargo build -p dev-sweeper-cli --release --target aarch64-apple-darwin
+          cargo build -p dev-sweeper-cli --release --target x86_64-apple-darwin
+          lipo -create -output sweep-darwin-universal \
+            target/aarch64-apple-darwin/release/sweep \
+            target/x86_64-apple-darwin/release/sweep
+
+      - name: build & package (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          cargo build -p dev-sweeper-cli --release
+          cp target/release/sweep sweep-linux-x86_64
+          chmod +x sweep-linux-x86_64
+
+      - name: build & package (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: cmd
+        run: |
+          cargo build -p dev-sweeper-cli --release
+          copy target\release\sweep.exe sweep-windows-x86_64.exe
+
+      - name: resolve version tag
+        id: ver
+        shell: bash
+        run: echo "tag=v$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: upload CLI asset to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: sweep-*
