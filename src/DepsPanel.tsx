@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { fmtSize } from "./lib/format";
@@ -48,6 +48,8 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // 分析请求序号：防并发分析时旧响应覆盖新响应
+  const analyzeSeqRef = useRef(0);
   const [result, setResult] = useState<PruneReport | null>(null);
   const [confirming, setConfirming] = useState(false);
 
@@ -91,18 +93,23 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
 
   async function analyze() {
     if (!projectDir) return;
+    // 请求序号守卫：顶栏"分析依赖"事件不走按钮禁用逻辑，双击会并发两次
+    // invoke，先发后至的旧响应会覆盖新结果——只认最后一次请求的结果
+    const seq = ++analyzeSeqRef.current;
     setAnalyzing(true);
     setError(null);
     setResult(null);
     setSelected(new Set());
     try {
       const r = await invoke<DepReport>("analyze_deps", { projectDir });
+      if (seq !== analyzeSeqRef.current) return;
       setReport(r);
     } catch (e) {
+      if (seq !== analyzeSeqRef.current) return;
       setError(String(e));
       setReport(null);
     } finally {
-      setAnalyzing(false);
+      if (seq === analyzeSeqRef.current) setAnalyzing(false);
     }
   }
 
