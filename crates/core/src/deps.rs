@@ -196,6 +196,24 @@ fn analyze_node(dir: &Path) -> DepReport {
         })
         .unwrap_or_default();
 
+    // 配置文件里以插件名引用的包（postcss/babel/jest/tailwind/eslint 的
+    // JSON 配置不在源码扫描范围内）。与 scripts 合成"引用文本"统一做词边界
+    // 匹配；匹配不到不会误删，多算使用只是少清一个（安全方向的假阳性）。
+    let mut reference_text = scripts_blob;
+    for cfg in [
+        "postcss.config.json",
+        "babel.config.json",
+        ".babelrc",
+        "jest.config.json",
+        "tailwind.config.json",
+        ".eslintrc",
+    ] {
+        if let Ok(t) = std::fs::read_to_string(dir.join(cfg)) {
+            reference_text.push('\n');
+            reference_text.push_str(&t);
+        }
+    }
+
     let declared_names: HashSet<String> = declared.iter().map(|(n, _, _)| n.clone()).collect();
 
     // 逐条判定状态
@@ -203,9 +221,9 @@ fn analyze_node(dir: &Path) -> DepReport {
     let mut used_count = 0usize;
     for (name, kind, version) in &declared {
         let mut is_used = used.contains(name);
-        if !is_used && !scripts_blob.is_empty() {
+        if !is_used && !reference_text.is_empty() {
             if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))) {
-                is_used = re.is_match(&scripts_blob);
+                is_used = re.is_match(&reference_text);
             }
         }
         if is_used {
@@ -985,6 +1003,27 @@ mod tests {
         assert!(!names.contains(&"@tailwindcss/typography"), "CSS @plugin 引用应算使用: {names:?}");
         assert!(!names.contains(&"@fontsource/inter"), "CSS @import 引用应算使用: {names:?}");
         assert!(!names.contains(&"x-mts"), ".mts 的 import 应被扫描: {names:?}");
+    }
+
+    #[test]
+    fn analyze_marks_config_json_plugins_as_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("package.json"),
+            r#"{"name":"app","dependencies":{"postcss-preset-env":"1.0.0","left-pad":"2.0.0"}}"#,
+        );
+        touch(
+            &root.join("postcss.config.json"),
+            r#"{"plugins":{"postcss-preset-env":{}}}"#,
+        );
+        let report = analyze_deps(root).unwrap();
+        let names: Vec<&str> = report.unused.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            !names.contains(&"postcss-preset-env"),
+            "postcss.config.json 里的插件引用应算使用: {names:?}"
+        );
+        assert!(names.contains(&"left-pad"));
     }
 
     #[test]
