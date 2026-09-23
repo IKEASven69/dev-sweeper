@@ -100,9 +100,11 @@ export default function CachesPanel() {
         dryRun: dry,
       });
       if (!dry) {
-        const removed = new Set(targetIds);
-        setCaches((prev) => prev.filter((c) => !removed.has(c.id)));
-        setSelected(new Set());
+        // 只从列表移除真正清理成功的项——失败的留在原地（且保留勾选便于重试），
+        // 否则 UI 谎报已清理
+        const okIds = new Set(targetIds.filter((id) => !failed.some(([f]) => f === id)));
+        setCaches((prev) => prev.filter((c) => !okIds.has(c.id)));
+        setSelected(new Set(targetIds.filter((id) => !okIds.has(id))));
       }
     } catch (e) {
       setError(String(e));
