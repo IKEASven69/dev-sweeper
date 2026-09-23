@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -102,21 +102,28 @@ export default function App() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [lastReport, setLastReport] = useState<DeleteReport | null>(null);
   const [mode, setMode] = useState<"clean" | "deps" | "caches" | "archive" | "excludes">("clean");
+  // 扫描代际号：每次 startScan 自增，用于丢弃上一轮扫描的迟到事件
+  const scanGenRef = useRef(0);
 
   useEffect(() => {
     const subs = [
-      listen<Artifact>("scan:found", (e) => {
-        setArtifacts((prev) => [...prev, e.payload]);
+      listen<{ gen: number; artifact: Artifact }>("scan:found", (e) => {
+        // 丢弃上一轮扫描的迟到事件（取消后旧任务仍可能发事件）
+        if (e.payload.gen !== scanGenRef.current) return;
+        setArtifacts((prev) => [...prev, e.payload.artifact]);
       }),
-      listen<{ id: number; size: number }>("scan:size", (e) => {
+      listen<{ gen: number; id: number; size: number }>("scan:size", (e) => {
+        if (e.payload.gen !== scanGenRef.current) return;
         setArtifacts((prev) =>
           prev.map((a) => (a.id === e.payload.id ? { ...a, sizeBytes: e.payload.size } : a)),
         );
       }),
-      listen<{ scannedDirs: number }>("scan:progress", (e) => {
+      listen<{ gen: number; scannedDirs: number }>("scan:progress", (e) => {
+        if (e.payload.gen !== scanGenRef.current) return;
         setScanProgress(e.payload.scannedDirs);
       }),
-      listen<{ cancelled: boolean; elapsedMs: number }>("scan:done", (e) => {
+      listen<{ gen: number; cancelled: boolean; elapsedMs: number }>("scan:done", (e) => {
+        if (e.payload.gen !== scanGenRef.current) return;
         setScanning(false);
         setCancelled(e.payload.cancelled);
         setLastElapsedMs(e.payload.elapsedMs);
@@ -185,6 +192,9 @@ export default function App() {
 
   async function startScan() {
     if (!root || scanning) return;
+    // 代际号先自增再传给后端：本轮扫描的所有事件都带它，
+    // 上一轮的迟到事件（id 会从 0 重编号发生碰撞）按代际丢弃
+    const gen = ++scanGenRef.current;
     setArtifacts([]);
     setSelected(new Set());
     setLastReport(null);
@@ -193,7 +203,7 @@ export default function App() {
     setScanProgress(null);
     setScanning(true);
     try {
-      await invoke("scan", { root, ruleIds, excludes });
+      await invoke("scan", { root, ruleIds, excludes, gen });
     } catch (e) {
       console.error(e);
       setScanning(false);

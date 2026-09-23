@@ -18,7 +18,17 @@ type CancelSlot = Arc<Mutex<Option<Arc<AtomicBool>>>>;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct FoundEvent {
+    /// 扫描代际号：前端用它丢弃上一轮扫描的迟到事件（旧扫描被取消后其
+    /// compute_sizes 仍可能发出按 id 碰撞的 scan:size，污染新扫描结果）
+    gen: u32,
+    artifact: dev_sweeper_core::Artifact,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct SizeEvent {
+    gen: u32,
     id: u32,
     size: u64,
 }
@@ -26,12 +36,14 @@ struct SizeEvent {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ProgressEvent {
+    gen: u32,
     scanned_dirs: usize,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ScanSummary {
+    gen: u32,
     count: usize,
     total_bytes: u64,
     elapsed_ms: u64,
@@ -65,6 +77,7 @@ async fn scan(
     root: String,
     rule_ids: Vec<String>,
     excludes: Vec<String>,
+    gen: u32,
 ) -> Result<ScanSummary, String> {
     // State<'_> 不能跨 spawn_blocking（非 'static）；先 clone 出内部的 Arc。
     let cancel_slot: CancelSlot = state.inner().clone();
@@ -84,15 +97,18 @@ async fn scan(
             &cancel,
             &excludes,
             |a| {
-                let _ = app.emit("scan:found", a);
+                let _ = app.emit("scan:found", FoundEvent { gen, artifact: a.clone() });
             },
             |scanned_dirs| {
-                let _ = app_for_progress.emit("scan:progress", ProgressEvent { scanned_dirs });
+                let _ = app_for_progress.emit(
+                    "scan:progress",
+                    ProgressEvent { gen, scanned_dirs },
+                );
             },
         );
         let app_for_size = app.clone();
         core::compute_sizes(&mut artifacts, &cancel, |id, size| {
-            let _ = app_for_size.emit("scan:size", SizeEvent { id, size });
+            let _ = app_for_size.emit("scan:size", SizeEvent { gen, id, size });
         });
         let cancelled = cancel.load(Ordering::Relaxed);
         // 扫描结束：清空 state 中的标志
@@ -101,6 +117,7 @@ async fn scan(
             *slot = None;
         }
         let summary = ScanSummary {
+            gen,
             count: artifacts.len(),
             total_bytes: artifacts.iter().filter_map(|a| a.size_bytes).sum(),
             elapsed_ms: start.elapsed().as_millis() as u64,
