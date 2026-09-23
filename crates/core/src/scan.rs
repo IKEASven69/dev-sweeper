@@ -84,11 +84,16 @@ pub fn scan_artifacts(
 }
 
 /// 判定产物路径是否被排除前缀命中。统一用 `/` 作分隔符比较，消除平台差异。
-fn path_excluded(path: &str, prefix: &str) -> bool {
+/// Windows/macOS 文件系统大小写不敏感，前缀比较同样忽略 ASCII 大小写（与
+/// rules.rs 的 names_equal 口径一致）——否则手工输入 `d:/important` 护不住
+/// 实际路径 `D:/Important`，排除保护会静默失效。
+pub(crate) fn path_excluded(path: &str, prefix: &str) -> bool {
     let norm = |s: &str| s.replace('\\', "/");
     let p = norm(path);
     let pre = norm(prefix);
     let pre = pre.trim_end_matches('/');
+    #[cfg(any(windows, target_os = "macos"))]
+    let (p, pre) = (p.to_ascii_lowercase(), pre.to_ascii_lowercase());
     p == pre || p.starts_with(&format!("{pre}/"))
 }
 
