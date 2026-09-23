@@ -90,6 +90,9 @@ export default function App() {
   });
   const [ruleIds, setRuleIds] = useState<string[]>(DEFAULT_RULES);
   const [staleDays, setStaleDays] = useState(90);
+  // 输入框原文状态：允许清空/临时非法值，失焦时归一——
+  // 此前清空瞬间就跳回 90，编辑体验断裂
+  const [staleDaysText, setStaleDaysText] = useState("90");
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<number | null>(null);
   const [cancelled, setCancelled] = useState(false);
@@ -247,7 +250,15 @@ export default function App() {
       });
       const deletedSet = new Set(report.deleted);
       setArtifacts((prev) => prev.filter((a) => !deletedSet.has(a.path)));
-      setSelected(new Set());
+      // 失败项保留勾选便于重试——此前一刀切清空，失败项要重新手动找回
+      setSelected((prev) => {
+        const next = new Set<number>();
+        for (const id of prev) {
+          const item = items.find((it) => it.id === id);
+          if (item && !deletedSet.has(item.path)) next.add(id);
+        }
+        return next;
+      });
       setLastReport(report);
     } catch (e) {
       console.error(e);
@@ -503,10 +514,18 @@ export default function App() {
               type="number"
               min={1}
               max={3650}
-              value={staleDays}
+              value={staleDaysText}
               onChange={(e) => {
-                const n = Number(e.target.value);
-                setStaleDays(n >= 1 && n <= 3650 ? n : 90);
+                const raw = e.target.value.replace(/[^0-9]/g, "");
+                setStaleDaysText(raw);
+                const n = Number(raw);
+                if (n >= 1 && n <= 3650) setStaleDays(n);
+              }}
+              onBlur={() => {
+                const n = Number(staleDaysText);
+                const v = n >= 1 && n <= 3650 ? n : 90;
+                setStaleDays(v);
+                setStaleDaysText(String(v));
               }}
               className="w-16 rounded-md bg-[var(--surface)] border border-[var(--hairline)] focus:border-[var(--accent)] px-2 py-0.5 text-center text-[var(--ink-2)] outline-none tabular-nums"
             />
@@ -759,8 +778,12 @@ export default function App() {
               <span style={{ color: "var(--accent)" }}>🔍</span> 预演：{lastReport.deleted.length} 项可删，
               实际未删除
               {lastReport.failed.length > 0 && (
-                <div className="mt-1 text-xs" style={{ color: "var(--critical)" }}>
-                  ✕ {lastReport.failed.length} 项会被拒：{lastReport.failed[0][1]}
+                <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
+                  <div>✕ {lastReport.failed.length} 项会被拒：</div>
+                  {lastReport.failed.slice(0, 3).map(([p, e]) => (
+                    <div key={p} className="truncate" title={`${p}\n${e}`}>· {e}</div>
+                  ))}
+                  {lastReport.failed.length > 3 && <div>…等共 {lastReport.failed.length} 项</div>}
                 </div>
               )}
             </>
@@ -769,8 +792,12 @@ export default function App() {
               <span style={{ color: "var(--good)" }}>✓</span> 已移入回收站{" "}
               {lastReport.deleted.length} 项，可随时恢复
               {lastReport.failed.length > 0 && (
-                <div className="mt-1 text-xs" style={{ color: "var(--critical)" }}>
-                  ✕ {lastReport.failed.length} 项失败：{lastReport.failed[0][1]}
+                <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
+                  <div>✕ {lastReport.failed.length} 项失败（已保留勾选）：</div>
+                  {lastReport.failed.slice(0, 3).map(([p, e]) => (
+                    <div key={p} className="truncate" title={`${p}\n${e}`}>· {e}</div>
+                  ))}
+                  {lastReport.failed.length > 3 && <div>…等共 {lastReport.failed.length} 项</div>}
                 </div>
               )}
             </>

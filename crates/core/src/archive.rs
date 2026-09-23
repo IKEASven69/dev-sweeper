@@ -166,11 +166,6 @@ pub fn discover_archivable(
     out
 }
 
-fn archive_file_name(name: &str) -> String {
-    let date = Local::now().format("%Y%m%d");
-    format!("{name}@{date}.tar.gz")
-}
-
 fn pack_tar_gz(src: &Path, dst: &Path) -> std::io::Result<u64> {
     // 先写 .part 临时文件再原子改名：中途失败/磁盘满/进程被杀不会留下
     // 半截 .tar.gz 被 list_archives 当成合法归档列出、还能"还原"
@@ -255,7 +250,15 @@ pub fn archive_project(
         .unwrap_or("project")
         .to_string();
     let original_size = dir_size(dir);
-    let archive_path: PathBuf = archive_dir.join(archive_file_name(&name));
+    // 同日重复归档不静默覆盖：文件名只到日期粒度，同项目同天再归档会
+    // 覆盖上一次的归档——追加序号区分
+    let date = Local::now().format("%Y%m%d").to_string();
+    let mut archive_path: PathBuf = archive_dir.join(format!("{name}@{date}.tar.gz"));
+    let mut seq = 1;
+    while archive_path.exists() {
+        seq += 1;
+        archive_path = archive_dir.join(format!("{name}@{date}-{seq}.tar.gz"));
+    }
 
     if dry_run {
         return Ok(ArchiveReport {

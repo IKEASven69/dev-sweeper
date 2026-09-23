@@ -413,12 +413,25 @@ fn main() {
                         .filter(|c| targets.contains(&c.id))
                         .map(|c| c.size_bytes)
                         .sum();
-                    println!(
-                        "[dry-run] 会清理 {} 个全局缓存，释放 {}",
-                        targets.len(),
-                        fmt_size(total)
-                    );
-                    println!("[dry-run] 实际未删除任何内容。");
+                    if json {
+                        // --json 路径必须输出 JSON（此前 dry-run 恒打印中文文本，
+                        // 脚本按 JSON 解析直接炸）
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "dryRun": true,
+                                "targets": targets,
+                                "wouldFreeBytes": total,
+                            })
+                        );
+                    } else {
+                        println!(
+                            "[dry-run] 会清理 {} 个全局缓存，释放 {}",
+                            targets.len(),
+                            fmt_size(total)
+                        );
+                        println!("[dry-run] 实际未删除任何内容。");
+                    }
                     return;
                 }
                 if !json {

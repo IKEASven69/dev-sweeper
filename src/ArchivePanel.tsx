@@ -48,6 +48,8 @@ export default function ArchivePanel({
   const [archives, setArchives] = useState<ArchiveFile[]>([]);
   const [archiveDir, setArchiveDir] = useState("");
   const [staleDays, setStaleDays] = useState(90);
+  // 输入框原文状态：允许清空/临时非法值，失焦时归一（同 App 的陈旧阈值）
+  const [staleDaysText, setStaleDaysText] = useState("90");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -232,10 +234,18 @@ export default function ArchivePanel({
             type="number"
             min={1}
             max={3650}
-            value={staleDays}
+            value={staleDaysText}
             onChange={(e) => {
-              const n = Number(e.target.value);
-              setStaleDays(n >= 1 && n <= 3650 ? n : 90);
+              const raw = e.target.value.replace(/[^0-9]/g, "");
+              setStaleDaysText(raw);
+              const n = Number(raw);
+              if (n >= 1 && n <= 3650) setStaleDays(n);
+            }}
+            onBlur={() => {
+              const n = Number(staleDaysText);
+              const v = n >= 1 && n <= 3650 ? n : 90;
+              setStaleDays(v);
+              setStaleDaysText(String(v));
             }}
             className="w-16 rounded-md bg-[var(--surface)] border border-[var(--hairline)] focus:border-[var(--accent)] px-2 py-0.5 text-center text-[var(--ink-2)] outline-none tabular-nums"
           />
