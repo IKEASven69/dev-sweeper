@@ -131,7 +131,13 @@ fn candidates() -> Vec<Candidate> {
             id: "python-uv",
             eco: CacheEco::Python,
             label: "uv 缓存（内容寻址）",
-            hints: &["${UV_CACHE_DIR}", "${HOME}/.cache/uv", "${LOCALAPPDATA}/uv"],
+            // 注意指向 cache 子目录：%LOCALAPPDATA%\uv 下还有 tools 等非缓存
+            // 数据（在 %APPDATA%\uv），整删父目录会把它们一起送进回收站
+            hints: &[
+                "${UV_CACHE_DIR}",
+                "${HOME}/.cache/uv",
+                "${LOCALAPPDATA}/uv/cache",
+            ],
             regen_hint: "uv 会重建全局缓存；清后首次安装较慢，但跨项目去重会恢复",
             risk: "notice",
         },
@@ -188,7 +194,16 @@ fn env_table(home: &str) -> HashMap<String, String> {
     );
     m.insert(
         "UV_CACHE_DIR".into(),
-        var_or("UV_CACHE_DIR", format!("{home}/.cache/uv")),
+        var_or(
+            "UV_CACHE_DIR",
+            // uv 在 Windows 的实际默认是 %LOCALAPPDATA%\uv\cache，
+            // 而非 Unix 风格的 ~/.cache/uv
+            if cfg!(windows) {
+                format!("{home}/AppData/Local/uv/cache")
+            } else {
+                format!("{home}/.cache/uv")
+            },
+        ),
     );
     m.insert(
         "PNPM_STORE_DIR".into(),
