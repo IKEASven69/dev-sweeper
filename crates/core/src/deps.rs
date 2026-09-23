@@ -178,8 +178,23 @@ fn analyze_node(dir: &Path) -> DepReport {
         }
     }
 
-    // 扫描源码 import，得到"被引用"的顶层包名集合
-    let used: HashSet<String> = scan_imported_packages(dir);
+    // 扫描源码 import，得到"被引用"的顶层包名集合。has_dynamic 表示存在
+    // 变量/模板字符串形式的动态 require/import——静态分析对其无能为力，
+    // "未使用"判定必须整体降级。
+    let (used, has_dynamic) = scan_imported_packages(dir);
+
+    // scripts 字段里以命令行形式使用的包（prisma、husky、vite 等 CLI 依赖
+    // 不会被 import，只会出现在 npm scripts 里——漏看这里是误报的最大来源）
+    let scripts_blob: String = manifest
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .map(|o| {
+            o.values()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
 
     let declared_names: HashSet<String> = declared.iter().map(|(n, _, _)| n.clone()).collect();
 
@@ -187,16 +202,30 @@ fn analyze_node(dir: &Path) -> DepReport {
     let mut unused: Vec<DepEntry> = Vec::new();
     let mut used_count = 0usize;
     for (name, kind, version) in &declared {
-        let is_used = used.contains(name);
+        let mut is_used = used.contains(name);
+        if !is_used && !scripts_blob.is_empty() {
+            if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))) {
+                is_used = re.is_match(&scripts_blob);
+            }
+        }
         if is_used {
             used_count += 1;
             continue; // 只关心未使用的，Used 不进列表
         }
         let (confidence, note) = match kind {
-            DepKind::Runtime => (
-                DepConfidence::High,
-                Some("运行期依赖，源码中从未 import，几乎可以确定移除".to_string()),
-            ),
+            DepKind::Runtime => {
+                if has_dynamic {
+                    (
+                        DepConfidence::Review,
+                        Some("运行期依赖未在源码 import；但项目存在动态 require/import，静态判定不可靠，请人工确认".to_string()),
+                    )
+                } else {
+                    (
+                        DepConfidence::High,
+                        Some("运行期依赖，源码与 npm scripts 中均未引用，可较放心移除".to_string()),
+                    )
+                }
+            }
             DepKind::Dev => (
                 DepConfidence::Review,
                 Some("开发依赖，可能仅通过 CLI / 配置文件（如 eslint、vite、tsc）使用，未在源码 import 中出现".to_string()),
@@ -250,6 +279,11 @@ fn analyze_node(dir: &Path) -> DepReport {
     extraneous.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut notes = Vec::new();
+    if has_dynamic {
+        notes.push(
+            "检测到动态 require/import（变量或模板字符串形式），\"未使用\"判定的置信度已整体下调。".into(),
+        );
+    }
     if !unused.is_empty() {
         notes.push("未使用依赖为候选移除项；运行期依赖（High）可较放心移除，开发依赖（Review）请先确认未被 CLI/配置引用。".into());
     }
@@ -279,8 +313,12 @@ fn analyze_node(dir: &Path) -> DepReport {
 /// 遍历项目源码目录，提取所有被 import/require 的顶层包名。
 ///
 /// 跳过 node_modules、.git 及常见构建产物目录，避免扫到依赖自身代码。
-fn scan_imported_packages(dir: &Path) -> HashSet<String> {
+/// 返回 (被引用包名集合, 是否存在动态 require/import)。后者指
+/// `require(pluginName)`、``import(`./locales/${lang}.js`)`` 这类无法静态
+/// 解析的形式——一旦出现，"未使用"判定必须降级为 Review。
+fn scan_imported_packages(dir: &Path) -> (HashSet<String>, bool) {
     let mut used = HashSet::new();
+    let mut has_dynamic = false;
     let skip_dirs: HashSet<&str> = [
         "node_modules",
         ".git",
@@ -313,29 +351,91 @@ fn scan_imported_packages(dir: &Path) -> HashSet<String> {
             continue;
         }
         let path = entry.path();
-        if !is_source_file(path) {
+        let is_src = is_source_file(path);
+        let is_style = is_style_file(path);
+        if !is_src && !is_style {
             continue;
         }
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        for spec in extract_import_specifiers(&text) {
-            if let Some(pkg) = resolve_package_name(&spec) {
-                used.insert(pkg);
+        if is_src {
+            for spec in extract_import_specifiers(&text) {
+                if let Some(pkg) = resolve_package_name(&spec) {
+                    used.insert(pkg);
+                }
+            }
+            if !has_dynamic && has_dynamic_import(&text) {
+                has_dynamic = true;
+            }
+        } else {
+            // Tailwind v4 CSS-first（@plugin/@import）、sass @use 等包只在样式里出现
+            for spec in extract_style_package_refs(&text) {
+                if let Some(pkg) = resolve_package_name(&spec) {
+                    used.insert(pkg);
+                }
             }
         }
     }
-    used
+    (used, has_dynamic)
 }
 
 /// 是否是需要扫描的源码文件（按扩展名）。
 fn is_source_file(path: &Path) -> bool {
-    static EXTS: &[&str] = &["js", "jsx", "ts", "tsx", "mjs", "cjs", "vue", "svelte"];
+    static EXTS: &[&str] = &[
+        "js", "jsx", "ts", "tsx", "mts", "cts", "mjs", "cjs", "vue", "svelte",
+    ];
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| EXTS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+/// 样式文件：Tailwind v4 CSS-first（`@plugin "@tailwindcss/typography"`、
+/// `@import "tailwindcss"`）、`@fontsource/*`、sass `@use "pkg"` 等引用只在
+/// 样式里出现，不扫会系统性误报"未使用"。
+fn is_style_file(path: &Path) -> bool {
+    static EXTS: &[&str] = &["css", "scss", "sass", "less"];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| EXTS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// 检测无法静态解析的动态导入：参数不是单纯字面量的形式——
+/// `require(name)` / ``import(`tpl`)`` / `import("a" + b)`。
+/// 误报只导致置信度下调（安全方向），漏报才会导致误删，故宁可宽松。
+fn has_dynamic_import(text: &str) -> bool {
+    static PATS: &[&str] = &[
+        // 参数以非引号开头：变量、模板字符串、拼接表达式
+        r#"(?:import|require)\s*\(\s*[^'")\s]"#,
+        // 字面量后面还有表达式（拼接/模板续写）
+        r#"(?:import|require)\s*\(\s*['"][^'"]*['"]\s*[^),;]"#,
+    ];
+    PATS.iter().any(|p| {
+        regex::Regex::new(p)
+            .map(|re| re.is_match(text))
+            .unwrap_or(false)
+    })
+}
+
+/// 从样式文本提取以包形式引用的说明符（`@plugin` / `@import` / `@use` / `@forward`）。
+/// 相对路径由 resolve_package_name 过滤；sass/css 内建命名空间（sass:math 等）在此排除。
+fn extract_style_package_refs(text: &str) -> Vec<String> {
+    let re = regex::Regex::new(r#"@(?:plugin|import|use|forward)\s+['"]([^'"]+)['"]"#)
+        .expect("静态正则模式必须有效");
+    let mut out = Vec::new();
+    for cap in re.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            let s = m.as_str();
+            if s.contains(':') && !s.contains("://") {
+                continue; // sass:/css: 内建命名空间
+            }
+            out.push(s.to_string());
+        }
+    }
+    out
 }
 
 /// 从一段源码文本中提取所有 import/require 的字符串字面量（模块说明符）。
@@ -423,7 +523,23 @@ pub fn prune_deps(
     let mut manifest: serde_json::Value = serde_json::from_str(&original)
         .map_err(|e| format!("package.json 不是合法 JSON: {e}"))?;
 
-    let remove_set: HashSet<&String> = remove.iter().collect();
+    // 服务端白名单约束：`remove` 来自前端任意载荷，必须重新对照"当前分析"
+    // 的未使用清单——清单外的名字（如被源码引用的 react）一律拒绝。
+    // 分析失败时按空清单处理（fail-closed）。
+    let fresh_unused: HashSet<String> = analyze_deps(dir)
+        .map(|r| r.unused.into_iter().map(|e| e.name).collect())
+        .unwrap_or_default();
+    let mut failed: Vec<(String, String)> = remove
+        .iter()
+        .filter(|n| !fresh_unused.contains(*n))
+        .map(|n| {
+            (
+                n.clone(),
+                "不在当前\"未使用依赖\"清单中（可能刚被源码/scripts 引用），已拒绝移除".to_string(),
+            )
+        })
+        .collect();
+    let remove_set: HashSet<&String> = remove.iter().filter(|n| fresh_unused.contains(*n)).collect();
     let mut removed: Vec<String> = Vec::new();
 
     for field in ["dependencies", "devDependencies"] {
@@ -451,7 +567,8 @@ pub fn prune_deps(
             removed: Vec::new(),
             freed_bytes: 0,
             backup_path: None,
-            failed: Vec::new(),
+            // 保留拒绝原因（白名单外/清单里没有），让调用方知道为什么没动
+            failed,
             dry_run,
         });
     }
@@ -472,12 +589,23 @@ pub fn prune_deps(
 
     // 移动对应 node_modules 目录进回收站，立即释放磁盘（可恢复）
     let mut freed_bytes = 0u64;
-    let mut failed = Vec::new();
     let nm = dir.join("node_modules");
     for name in &removed {
         let pkg_dir = nm.join(name);
         if !pkg_dir.is_dir() {
             continue;
+        }
+        // 与 delete.rs 的安全不变量对齐：junction/symlink 拒绝处置。
+        // pnpm workspace 的 node_modules/<workspace包> 是指向兄弟源码包的
+        // 链接，trash 它可能波及链接目标——宁可留着让重装对齐。
+        if let Ok(m) = std::fs::symlink_metadata(&pkg_dir) {
+            if m.file_type().is_symlink() {
+                failed.push((
+                    name.clone(),
+                    "node_modules 内该包是符号链接/junction（可能是 pnpm workspace），为防误伤未移动；已从 package.json 移除，重装依赖时会自动对齐".to_string(),
+                ));
+                continue;
+            }
         }
         if dry_run {
             freed_bytes += crate::scan::dir_size(&pkg_dir);
@@ -556,7 +684,20 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
         });
     }
 
-    // 1) 备份旧 node_modules 与旧锁文件到回收站，立即释放磁盘（可恢复）
+    // 1) 先用旧锁文件生成 pnpm-lock.yaml。pnpm import 只读旧锁文件、不碰
+    //    node_modules；失败则项目原封不动，直接返回，不进入任何回收站操作。
+    if let Err(e) = run_pnpm(&["import"], dir) {
+        return Ok(MigrateReport {
+            from_pm,
+            freed_bytes: 0,
+            backup_path: None,
+            reinstalled: false,
+            error: Some(format!("pnpm import 失败（项目未做任何改动）: {e}")),
+            dry_run,
+        });
+    }
+
+    // 2) pnpm-lock.yaml 已落盘，此时回收旧 node_modules 与旧锁文件才安全
     let nm = dir.join("node_modules");
     let old_lock = match from_pm {
         PmKind::Npm => Some("package-lock.json"),
@@ -567,13 +708,29 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
     let mut backup_path: Option<String> = None;
 
     if nm.is_dir() {
+        // junction/symlink 型 node_modules（已被 pnpm/链接安装接管）拒绝迁移，
+        // 防止回收站操作波及链接目标
+        if let Ok(m) = std::fs::symlink_metadata(&nm) {
+            if m.file_type().is_symlink() {
+                return Ok(MigrateReport {
+                    from_pm,
+                    freed_bytes: 0,
+                    backup_path: None,
+                    reinstalled: false,
+                    error: Some(
+                        "node_modules 是符号链接/junction（可能已被 pnpm 接管），为防误伤已拒绝迁移".into(),
+                    ),
+                    dry_run,
+                });
+            }
+        }
         freed_bytes += crate::scan::dir_size(&nm);
         match trash::delete(&nm) {
             Ok(()) => backup_path = Some(nm.to_string_lossy().into_owned()),
             Err(e) => {
                 return Ok(MigrateReport {
                     from_pm,
-                    freed_bytes: 0,
+                    freed_bytes,
                     backup_path: None,
                     reinstalled: false,
                     error: Some(format!("无法将旧 node_modules 移入回收站: {e}")),
@@ -586,13 +743,13 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
         let lock = dir.join(name);
         if lock.is_file() {
             freed_bytes += std::fs::metadata(&lock).map(|m| m.len()).unwrap_or(0);
-            // 旧锁文件移入回收站失败不致命（pnpm 会另写 pnpm-lock.yaml），仅忽略
+            // pnpm-lock.yaml 已生成，旧锁文件仅剩历史价值；回收失败不致命
             let _ = trash::delete(&lock);
         }
     }
 
-    // 2) 运行 pnpm import && pnpm install（优先全局 pnpm，回退 npx pnpm）
-    let result = run_pnpm(&["import"], dir).and_then(|_| run_pnpm(&["install"], dir));
+    // 3) 重新安装（优先全局 pnpm，回退 npx pnpm）
+    let result = run_pnpm(&["install"], dir);
     let reinstalled = result.is_ok();
     let error = result.err();
 
@@ -780,6 +937,72 @@ mod tests {
         let after = std::fs::read_to_string(root.join("package.json")).unwrap();
         assert!(after.contains("drop"));
         assert!(root.join("node_modules/drop").exists());
+    }
+
+    #[test]
+    fn analyze_marks_scripts_cli_deps_as_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("package.json"),
+            r#"{"name":"app","dependencies":{"prisma":"1.0.0","left-pad":"2.0.0"},"scripts":{"db:push":"prisma db push","build":"node build.js"}}"#,
+        );
+        let report = analyze_deps(root).unwrap();
+        let names: Vec<&str> = report.unused.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            !names.contains(&"prisma"),
+            "npm scripts 里以命令行使用的 CLI 依赖不应判未使用: {names:?}"
+        );
+        assert!(names.contains(&"left-pad"));
+    }
+
+    #[test]
+    fn analyze_downgrades_runtime_unused_when_dynamic_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("package.json"), r#"{"dependencies":{"left-pad":"1.0.0"}}"#);
+        touch(&root.join("src/main.js"), "const m = require(moduleName);\n");
+        let report = analyze_deps(root).unwrap();
+        let e = report.unused.iter().find(|d| d.name == "left-pad").unwrap();
+        assert_eq!(e.confidence, DepConfidence::Review, "存在动态 require 时应降级");
+    }
+
+    #[test]
+    fn analyze_scans_css_and_mts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("package.json"),
+            r#"{"dependencies":{"@tailwindcss/typography":"1.0.0","@fontsource/inter":"2.0.0","x-mts":"3.0.0"}}"#,
+        );
+        touch(
+            &root.join("src/app.css"),
+            "@plugin \"@tailwindcss/typography\";\n@import \"@fontsource/inter\";\n",
+        );
+        touch(&root.join("src/util.mts"), "import x from 'x-mts';\n");
+        let report = analyze_deps(root).unwrap();
+        let names: Vec<&str> = report.unused.iter().map(|d| d.name.as_str()).collect();
+        assert!(!names.contains(&"@tailwindcss/typography"), "CSS @plugin 引用应算使用: {names:?}");
+        assert!(!names.contains(&"@fontsource/inter"), "CSS @import 引用应算使用: {names:?}");
+        assert!(!names.contains(&"x-mts"), ".mts 的 import 应被扫描: {names:?}");
+    }
+
+    #[test]
+    fn prune_rejects_names_outside_unused_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("package.json"),
+            r#"{"name":"app","dependencies":{"react":"1.0.0","drop":"2.0.0"}}"#,
+        );
+        touch(&root.join("node_modules/react/index.js"), "x");
+        // react 被源码引用 → 不在未使用清单 → 即使调用方显式点名也拒绝
+        touch(&root.join("src/main.ts"), "import r from 'react';\n");
+        let rep = prune_deps(root, &["react".to_string()], false).unwrap();
+        assert!(!rep.removed.contains(&"react".to_string()), "白名单外不得移除: {:?}", rep.removed);
+        assert!(rep.failed.iter().any(|(n, _)| n == "react"));
+        let after = std::fs::read_to_string(root.join("package.json")).unwrap();
+        assert!(after.contains("react"), "package.json 不应丢掉 react");
     }
 
     #[test]
