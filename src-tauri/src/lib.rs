@@ -228,12 +228,13 @@ async fn purge_cache(id: String, dry_run: bool) -> Result<CachePurgeReport, Stri
 async fn discover_archivable(
     root: String,
     stale_days: u64,
+    excludes: Vec<String>,
 ) -> Result<Vec<ArchivableProject>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        dev_sweeper_core::discover_archivable(Path::new(&root), stale_days)
+        Ok(dev_sweeper_core::discover_archivable(Path::new(&root), stale_days, &excludes))
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -241,6 +242,7 @@ async fn archive_project(
     dir: String,
     archive_dir: String,
     dry_run: bool,
+    excludes: Vec<String>,
 ) -> Result<ArchiveReport, String> {
     let adir = if archive_dir.is_empty() {
         dev_sweeper_core::default_archive_dir()
@@ -248,7 +250,7 @@ async fn archive_project(
         archive_dir
     };
     tauri::async_runtime::spawn_blocking(move || {
-        dev_sweeper_core::archive_project(Path::new(&dir), Path::new(&adir), dry_run)
+        dev_sweeper_core::archive_project(Path::new(&dir), Path::new(&adir), dry_run, &excludes)
     })
     .await
     .map_err(|e| e.to_string())?

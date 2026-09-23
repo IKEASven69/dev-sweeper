@@ -104,7 +104,13 @@ fn dir_last_active_ms(dir: &Path) -> Option<u64> {
 
 /// 扫描 root 下一级子目录，返回"沉睡项目"列表（按最后活跃升序，最旧的在前）。
 /// `min_stale_days`：只返回超过 N 天未活跃的项目；为 0 则返回全部（仍按陈旧排序）。
-pub fn discover_archivable(root: &Path, min_stale_days: u64) -> Vec<ArchivableProject> {
+/// `excludes`：排除（保护）路径前缀，命中的项目不出现在列表里——"永不清理"
+/// 的承诺必须覆盖归档流程，否则受保护项目会被整体移入回收站。
+pub fn discover_archivable(
+    root: &Path,
+    min_stale_days: u64,
+    excludes: &[String],
+) -> Vec<ArchivableProject> {
     let cutoff = if min_stale_days > 0 {
         Some(now_ms().saturating_sub(min_stale_days * 86_400_000))
     } else {
@@ -131,6 +137,13 @@ pub fn discover_archivable(root: &Path, min_stale_days: u64) -> Vec<ArchivablePr
         };
         if name.starts_with('.') {
             continue;
+        }
+        let path_str = path.to_string_lossy();
+        if excludes
+            .iter()
+            .any(|ex| crate::scan::path_excluded(&path_str, ex))
+        {
+            continue; // 排除（保护）路径：不进入沉睡列表
         }
         let size = dir_size(&path);
         let last = dir_last_active_ms(&path);
@@ -184,13 +197,26 @@ fn unpack_tar_gz(file: &Path, dest: &Path) -> std::io::Result<u64> {
 
 /// 把整个项目打包成 .tar.gz（写入 archive_dir），成功后原项目移入回收站。
 /// dry_run 只报告，不写文件不删项目。
+/// `excludes`：排除（保护）路径前缀。归档删除的是整个项目源码，破坏面最大，
+/// 即使调用方（UI/CLI）已被过滤，这里仍硬拒绝——纵深防御。
 pub fn archive_project(
     dir: &Path,
     archive_dir: &Path,
     dry_run: bool,
+    excludes: &[String],
 ) -> Result<ArchiveReport, String> {
     if !dir.is_dir() {
         return Err(format!("不是目录: {}", dir.display()));
+    }
+    let dir_str = dir.to_string_lossy();
+    if excludes
+        .iter()
+        .any(|ex| crate::scan::path_excluded(&dir_str, ex))
+    {
+        return Err(format!(
+            "该目录在「排除路径」保护列表中，已拒绝归档: {}",
+            dir.display()
+        ));
     }
     let name = dir
         .file_name()
@@ -343,10 +369,53 @@ mod tests {
         fs::write(tmp.path().join("alive/src/a.rs"), "x").unwrap();
         fs::create_dir_all(tmp.path().join(".hidden")).unwrap();
         fs::write(tmp.path().join("readme.txt"), "x").unwrap();
-        let v = discover_archivable(tmp.path(), 0);
+        let v = discover_archivable(tmp.path(), 0, &[]);
         let names: Vec<&str> = v.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["alive"]);
         assert!(!v[0].is_git);
+    }
+
+    #[test]
+    fn discover_respects_excludes() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("protected/src")).unwrap();
+        fs::write(tmp.path().join("protected/src/a.rs"), "x").unwrap();
+        fs::create_dir_all(tmp.path().join("normal/src")).unwrap();
+        fs::write(tmp.path().join("normal/src/a.rs"), "x").unwrap();
+        // 排除前缀按绝对路径比较（与 GUI/CLI 实际传入形式一致）
+        let prefix = tmp.path().join("protected").to_string_lossy().into_owned();
+        let v = discover_archivable(tmp.path(), 0, &[prefix]);
+        let names: Vec<&str> = v.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["normal"]);
+    }
+
+    #[test]
+    fn archive_refuses_excluded_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("protected");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("a.rs"), "x").unwrap();
+        let arch = tmp.path().join("arch");
+        let prefix = proj.to_string_lossy().into_owned();
+        let err = archive_project(&proj, &arch, false, &[prefix]).unwrap_err();
+        assert!(err.contains("拒绝归档"), "应硬拒绝受保护目录: {err}");
+        assert!(proj.exists(), "受保护目录必须原样保留");
+    }
+
+    #[test]
+    fn archive_excludes_match_case_insensitive_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("Important");
+        fs::create_dir_all(&proj).unwrap();
+        let arch = tmp.path().join("arch");
+        // 大小写不一致的前缀在 Windows/macOS 上也必须命中（防排除保护静默失效）
+        let prefix = proj.to_string_lossy().to_uppercase();
+        let res = archive_project(&proj, &arch, false, &[prefix]);
+        if cfg!(any(windows, target_os = "macos")) {
+            assert!(res.is_err(), "大小写不一致的排除前缀也应命中: {res:?}");
+        } else {
+            assert!(res.is_ok(), "Linux 大小写敏感，不应命中: {res:?}");
+        }
     }
 
     #[test]
@@ -356,7 +425,7 @@ mod tests {
         fs::create_dir_all(&fresh).unwrap();
         fs::write(fresh.join("a"), "x").unwrap();
         // min_stale_days=999 应排除刚创建的项目
-        let v = discover_archivable(&fresh, 999);
+        let v = discover_archivable(&fresh, 999, &[]);
         assert!(v.is_empty(), "刚创建的项目不应算沉睡: {:?}", v);
     }
 
@@ -370,13 +439,13 @@ mod tests {
         let arch = tmp.path().join("arch");
 
         // dry-run 不写文件、不删项目
-        let dr = archive_project(&proj, &arch, true).unwrap();
+        let dr = archive_project(&proj, &arch, true, &[]).unwrap();
         assert!(dr.dry_run);
         assert!(dr.original_size > 0);
         assert!(!Path::new(&dr.archive_file).exists());
 
         // 真实打包
-        let rep = archive_project(&proj, &arch, false).unwrap();
+        let rep = archive_project(&proj, &arch, false, &[]).unwrap();
         assert!(!rep.dry_run);
         assert!(Path::new(&rep.archive_file).exists(), "归档文件应存在");
         assert!(rep.compressed_size > 0);

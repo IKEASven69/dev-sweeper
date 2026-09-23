@@ -841,7 +841,7 @@ export default function App() {
       )}
       {mode === "deps" && <DepsPanel projectDir={root} />}
       {mode === "caches" && <CachesPanel />}
-      {mode === "archive" && <ArchivePanel projectDir={root} />}
+      {mode === "archive" && <ArchivePanel projectDir={root} excludes={excludes} />}
       {mode === "excludes" && (
         <ExcludesPanel excludes={excludes} onChange={setExcludes} />
       )}

@@ -126,6 +126,9 @@ enum Cmd {
         /// 以 JSON 输出（供脚本用）
         #[arg(long)]
         json: bool,
+        /// 排除（保护）路径前缀，逗号分隔，可多次。命中的项目不列出、不可归档
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
     },
     /// 把整个项目压缩归档（.tar.gz），原项目移入回收站释放工作区空间
     Archive {
@@ -139,6 +142,9 @@ enum Cmd {
         /// 跳过确认（非交互场景）
         #[arg(long, short = 'y')]
         yes: bool,
+        /// 排除（保护）路径前缀，逗号分隔，可多次。命中时拒绝归档
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
     },
     /// 从归档解回项目
     Restore {
@@ -425,8 +431,8 @@ fn main() {
                 }
             }
         }
-        Cmd::Archives { root, stale_days, json } => {
-            let list = discover_archivable(Path::new(&root), stale_days.unwrap_or(0));
+        Cmd::Archives { root, stale_days, json, exclude } => {
+            let list = discover_archivable(Path::new(&root), stale_days.unwrap_or(0), &exclude);
             if json {
                 println!("{}", serde_json::to_string_pretty(&list).unwrap());
             } else {
@@ -438,12 +444,13 @@ fn main() {
             archive_dir,
             dry_run,
             yes,
+            exclude,
         } => {
             let dir = archive_dir
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(default_archive_dir);
             if dry_run {
-                match archive_project(Path::new(&path), Path::new(&dir), true) {
+                match archive_project(Path::new(&path), Path::new(&dir), true, &exclude) {
                     Ok(r) => println!(
                         "[dry-run] 会将 {} 压缩为 {}，原项目移入回收站（释放 {}），实际未执行。",
                         r.source_path, r.archive_file, fmt_size(r.original_size)
@@ -461,7 +468,7 @@ fn main() {
                 println!("已取消。");
                 return;
             }
-            match archive_project(Path::new(&path), Path::new(&dir), false) {
+            match archive_project(Path::new(&path), Path::new(&dir), false, &exclude) {
                 Ok(r) => {
                     if r.removed_original {
                         println!(

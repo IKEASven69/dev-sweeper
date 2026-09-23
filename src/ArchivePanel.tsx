@@ -37,7 +37,13 @@ interface RestoreReport {
 }
 
 /** "压缩归档"面板：把沉睡项目整体压成 .tar.gz，原项目移入回收站——源码不丢、随时还原。 */
-export default function ArchivePanel({ projectDir }: { projectDir: string }) {
+export default function ArchivePanel({
+  projectDir,
+  excludes,
+}: {
+  projectDir: string;
+  excludes: string[];
+}) {
   const [projects, setProjects] = useState<ArchivableProject[]>([]);
   const [archives, setArchives] = useState<ArchiveFile[]>([]);
   const [archiveDir, setArchiveDir] = useState("");
@@ -54,7 +60,7 @@ export default function ArchivePanel({ projectDir }: { projectDir: string }) {
     void discover();
     void refreshArchives();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectDir, staleDays]);
+  }, [projectDir, staleDays, excludes]);
 
   useEffect(() => {
     if (!archiveResult) return;
@@ -75,6 +81,7 @@ export default function ArchivePanel({ projectDir }: { projectDir: string }) {
       const r = await invoke<ArchivableProject[]>("discover_archivable", {
         root: projectDir,
         staleDays,
+        excludes,
       });
       setProjects(r);
     } catch (e) {
@@ -120,6 +127,7 @@ export default function ArchivePanel({ projectDir }: { projectDir: string }) {
           dir: path,
           archiveDir,
           dryRun: dry,
+          excludes,
         });
         if (r.error && !r.removedOriginal) {
           failed++;
