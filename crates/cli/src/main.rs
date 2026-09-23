@@ -159,7 +159,20 @@ enum Cmd {
     },
 }
 
+/// 中文 Windows 的传统控制台默认代码页 936（GBK），而 Rust stdout 固定输出
+/// UTF-8 字节——中文表格与 emoji 会全部乱码。启动时把输出代码页切到 65001。
+#[cfg(windows)]
+fn force_utf8_console() {
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+    }
+}
+
+#[cfg(not(windows))]
+fn force_utf8_console() {}
+
 fn main() {
+    force_utf8_console();
     match Cli::parse().cmd {
         Cmd::Scan { path, rules, stale_days, json, exclude, no_size } => {
             let artifacts = scan_and_size(&path, &rules, stale_days, &exclude, no_size);
@@ -198,7 +211,18 @@ fn main() {
                     }
                 }
             }
-            println!("\n共释放 {}（{} 项失败），可在回收站恢复。", fmt_size(freed), failed);
+            if no_size {
+                println!(
+                    "\n已清理 {} 项（--no-size 跳过大小统计），{} 项失败，可在回收站恢复。",
+                    artifacts.len() - failed,
+                    failed
+                );
+            } else {
+                println!("\n共释放 {}（{} 项失败），可在回收站恢复。", fmt_size(freed), failed);
+            }
+            if failed > 0 {
+                std::process::exit(1);
+            }
         }
         Cmd::Deps { path, apply, json } => {
             let report = match analyze_deps(&path) {
@@ -247,9 +271,13 @@ fn main() {
                         for (n, e) in &rep.failed {
                             eprintln!("  ✕ {n}: {e}");
                         }
+                        std::process::exit(1);
                     }
                 }
-                Err(e) => eprintln!("裁剪失败: {e}"),
+                Err(e) => {
+                    eprintln!("裁剪失败: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Migrate { path, dry_run, yes } => {
@@ -298,7 +326,10 @@ fn main() {
                     );
                     println!("已生成 pnpm-lock.yaml，后续用 `pnpm install` 维护。");
                 }
-                Err(e) => eprintln!("迁移失败: {e}"),
+                Err(e) => {
+                    eprintln!("迁移失败: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::UvMigrate { path, dry_run, yes } => {
@@ -350,7 +381,10 @@ fn main() {
                     );
                     println!("已建立 uv 管理的 .venv；后续用 `uv sync` / `uv pip install` 维护。");
                 }
-                Err(e) => eprintln!("迁移失败: {e}"),
+                Err(e) => {
+                    eprintln!("迁移失败: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Caches { id, apply, dry_run, json } => {
@@ -370,7 +404,7 @@ fn main() {
                 for t in &targets {
                     if !known.contains(t) {
                         eprintln!("未知缓存 id: {t}（用 `sweep caches` 查看可用 id）");
-                        return;
+                        std::process::exit(1);
                     }
                 }
                 if dry_run {
@@ -423,6 +457,9 @@ fn main() {
                         failed
                     );
                 }
+                if failed > 0 {
+                    std::process::exit(1);
+                }
             } else {
                 if json {
                     println!("{}", serde_json::to_string_pretty(&caches).unwrap());
@@ -455,7 +492,10 @@ fn main() {
                         "[dry-run] 会将 {} 压缩为 {}，原项目移入回收站（释放 {}），实际未执行。",
                         r.source_path, r.archive_file, fmt_size(r.original_size)
                     ),
-                    Err(e) => eprintln!("错误: {e}"),
+                    Err(e) => {
+                        eprintln!("错误: {e}");
+                        std::process::exit(1);
+                    }
                 }
                 return;
             }
@@ -491,7 +531,10 @@ fn main() {
                         fmt_size(r.original_size)
                     );
                 }
-                Err(e) => eprintln!("归档失败: {e}"),
+                Err(e) => {
+                    eprintln!("归档失败: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Restore {
@@ -505,7 +548,10 @@ fn main() {
                         "[dry-run] 会将 {} 解回到 {}，实际未写入。",
                         r.archive_file, r.restored_to
                     ),
-                    Err(e) => eprintln!("错误: {e}"),
+                    Err(e) => {
+                        eprintln!("错误: {e}");
+                        std::process::exit(1);
+                    }
                 }
                 return;
             }
@@ -516,7 +562,10 @@ fn main() {
                     r.restored_to,
                     fmt_size(r.restored_bytes)
                 ),
-                Err(e) => eprintln!("还原失败: {e}"),
+                Err(e) => {
+                    eprintln!("还原失败: {e}");
+                    std::process::exit(1);
+                }
             }
         }
     }

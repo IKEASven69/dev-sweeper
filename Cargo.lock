@@ -863,6 +863,7 @@ dependencies = [
  "comfy-table",
  "dev-sweeper-core",
  "serde_json",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

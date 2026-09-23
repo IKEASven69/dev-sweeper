@@ -19,3 +19,6 @@ dev-sweeper-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
 serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
