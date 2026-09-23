@@ -172,9 +172,31 @@ fn archive_file_name(name: &str) -> String {
 }
 
 fn pack_tar_gz(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    // 先写 .part 临时文件再原子改名：中途失败/磁盘满/进程被杀不会留下
+    // 半截 .tar.gz 被 list_archives 当成合法归档列出、还能"还原"
+    let mut os = dst.as_os_str().to_os_string();
+    os.push(".part");
+    let tmp: PathBuf = os.into();
+    match pack_tar_gz_into(src, &tmp) {
+        Ok(n) => {
+            fs::rename(&tmp, dst)?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+fn pack_tar_gz_into(src: &Path, dst: &Path) -> std::io::Result<u64> {
     let file = File::create(dst)?;
     let enc = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(enc);
+    // 不解引用 symlink/junction：tar 默认 follow 会把链接目标内容拉平拍进
+    // 归档（pnpm workspace 链接会把兄弟包甚至项目外数据吸进来），还原后
+    // 链接结构也退化为拷贝
+    builder.follow_symlinks(false);
     // 用项目名作为 tar 内顶层目录，解压后落在 <dest>/<name>
     let top = src
         .file_name()
@@ -187,12 +209,21 @@ fn pack_tar_gz(src: &Path, dst: &Path) -> std::io::Result<u64> {
     Ok(dst.metadata()?.len())
 }
 
-fn unpack_tar_gz(file: &Path, dest: &Path) -> std::io::Result<u64> {
+fn unpack_tar_gz(file: &Path, dest: &Path) -> std::io::Result<()> {
     let f = File::open(file)?;
     let dec = GzDecoder::new(BufReader::new(f));
     let mut ar = Archive::new(dec);
-    ar.unpack(dest)?;
-    Ok(dir_size(dest))
+    ar.unpack(dest)
+}
+
+/// 预检 gzip 层完整性：完整解一遍流（CRC/截断错误在此暴露），
+/// 避免解压到一半才失败、留下半解压目录。
+fn verify_gzip_intact(file: &Path) -> std::io::Result<()> {
+    let f = File::open(file)?;
+    let mut dec = GzDecoder::new(BufReader::new(f));
+    let mut sink = std::io::sink();
+    std::io::copy(&mut dec, &mut sink)?;
+    Ok(())
 }
 
 /// 把整个项目打包成 .tar.gz（写入 archive_dir），成功后原项目移入回收站。
@@ -332,11 +363,35 @@ pub fn restore_archive(
     }
     fs::create_dir_all(dest_root)
         .map_err(|e| format!("无法创建目标目录 {}: {e}", dest_root.display()))?;
-    let restored = unpack_tar_gz(file, dest_root).map_err(|e| format!("解压失败: {e}"))?;
+    verify_gzip_intact(file).map_err(|e| format!("归档完整性校验失败（可能被截断或损坏）: {e}"))?;
+
+    // 解压到 staging 中转目录，成功后把 <name> 原子改名到最终位置——
+    // 失败不留半截目标目录挡住下次重试
+    let staging = dest_root.join(format!(".restore-staging-{}", project_name));
+    if staging.exists() {
+        // 上次失败/中断的残留，按工具惯例进回收站
+        let _ = trash::delete(&staging);
+    }
+    fs::create_dir_all(&staging)
+        .map_err(|e| format!("无法创建中转目录: {e}"))?;
+    if let Err(e) = unpack_tar_gz(file, &staging) {
+        let _ = trash::delete(&staging);
+        return Err(format!("解压失败: {e}"));
+    }
+    let staged_target = staging.join(&project_name);
+    if let Err(e) = fs::rename(&staged_target, &target) {
+        let _ = trash::delete(&staging);
+        return Err(format!("还原移动到最终位置失败: {e}"));
+    }
+    // staging 现在应为空（tar 顶层只有 <name>/）；非空则回收
+    if fs::remove_dir(&staging).is_err() {
+        let _ = trash::delete(&staging);
+    }
     Ok(RestoreReport {
         archive_file: file.to_string_lossy().into_owned(),
         restored_to: target.to_string_lossy().into_owned(),
-        restored_bytes: restored,
+        // 统计本次还原出的目标目录，而不是整个 dest_root
+        restored_bytes: dir_size(&target),
         error: None,
         dry_run: false,
     })
@@ -427,6 +482,33 @@ mod tests {
         // min_stale_days=999 应排除刚创建的项目
         let v = discover_archivable(&fresh, 999, &[]);
         assert!(v.is_empty(), "刚创建的项目不应算沉睡: {:?}", v);
+    }
+
+    #[test]
+    fn restore_rejects_corrupt_archive_without_partial_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let arch = tmp.path().join("arch");
+        fs::create_dir_all(&arch).unwrap();
+        let proj = tmp.path().join("p");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("a"), "hello world").unwrap();
+        let rep = archive_project(&proj, &arch, false, &[]).unwrap();
+        let file = Path::new(&rep.archive_file).to_path_buf();
+        assert!(file.exists(), "归档文件应存在（trash 失败不影响打包）");
+
+        // 翻转中间字节破坏 gzip 数据 → CRC 校验失败
+        let mut bytes = fs::read(&file).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] = bytes[mid] ^ 0xff;
+        fs::write(&file, &bytes).unwrap();
+
+        let dest = tmp.path().join("restored");
+        let r = restore_archive(&file, &dest, false);
+        assert!(r.is_err(), "损坏归档应还原失败: {r:?}");
+        assert!(
+            !dest.join("p").exists(),
+            "不得留下半解压的目标目录挡住重试"
+        );
     }
 
     #[test]
