@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-23
+
+一轮系统性代码审查（约 1 万行全量 + 依赖源码交叉核对）后的安全与正确性修复。
+
+### 修复（安全类）
+- **pnpm 迁移顺序**：此前先回收旧锁文件再跑 `pnpm import`，而 import 的唯一职责就是读旧锁文件——真实环境必然失败且项目已被拆散（CI 无回收站侥幸通过）。改为 import 成功产出 `pnpm-lock.yaml` 后再回收，import 失败则项目原封不动。
+- **「排除路径」保护覆盖归档流程**：归档是破坏面最大的操作（整个项目源码进回收站），此前完全绕过 excludes。现在发现时过滤 + 核心层硬拒绝（纵深防御），CLI `archives`/`archive` 子命令新增 `--exclude` 旗标。
+- **排除前缀在 Windows/macOS 上忽略大小写**：手工输入 `d:/important` 此护栏不住实际路径 `D:/Important`，保护静默失效。
+- **`prune_deps` 安全对齐 delete.rs 不变量**：`remove` 参数在后端重新对照最新"未使用"清单（清单外一律拒绝，前端任意载荷点不出 react）；node_modules 内 symlink/junction 拒绝处置（防 pnpm workspace 误伤）。
+- **归档打包/还原原子化**：tar 打包不再解引用 symlink/junction（默认 follow 会把链接目标拉平拍进归档）；`.part` 临时文件 + 原子改名；还原前 gzip 完整性预检；staging 中转，失败不留半解压目录挡住重试；`restored_bytes` 统计口径修正。
+- **uv 缓存清理指向 `cache` 子目录**，不再整删 `%LOCALAPPDATA%\uv`；Windows 默认值兜底解析修正。
+
+### 修复（正确性类）
+- **依赖"未使用"误报修补**：npm scripts 里以命令行使用的包（prisma/husky 等）、CSS/Sass 的 `@plugin`/`@import`/`@use` 引用、postcss/babel/jest/tailwind/eslint 配置文件里的插件名、`.mts`/`.cts` 扩展名，现在都算"使用"；检测到动态 require/import 时 Runtime 未使用从 High 降级为 Review。
+- **monorepo 陈旧度失真**：git 最后活跃取"最后触碰该子目录"的提交（pathspec），不再被父仓库任意提交污染。
+- **扫描事件代际号**：取消旧扫描后其迟到事件不再按 id 碰撞污染新扫描结果。
+- **重写 package.json 不再重排键序**（serde_json `preserve_order`）。
+- **缓存面板**：清理失败的项不再从列表消失，保留勾选便于重试。
+- **依赖分析并发防护**：请求序号守卫，旧响应不再覆盖新响应。
+
+### 修复（CLI）
+- Windows 传统控制台（GBK 代码页）中文与 emoji 乱码：启动时切 UTF-8 代码页。
+- 失败路径退出码统一为 1（裁剪/迁移/归档/还原失败、缓存未知 id、部分项失败），脚本与 CI 可感知。
+- `clean --no-size` 如实报告清理项数并注明跳过大小统计（此前报"共释放 0 B"）。
+
+### 测试
+- 核心测试 49 → 57（新增归档排除/损坏归档拒绝、依赖 scripts/CSS/mts/配置文件/白名单拒绝等回归测试）。
+
 ## [0.2.0] — 2026-09-01
 
 ### 新增
