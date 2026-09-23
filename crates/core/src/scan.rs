@@ -177,13 +177,17 @@ fn last_active_ms(project_dir: &Path) -> Option<u64> {
 /// 在 project_dir（或其祖先）所在 git 仓库取最后一次 commit 的毫秒时间戳。
 ///
 /// 不引入 git2/libgit2（避免重依赖与编译开销），直接调系统 git：
-/// `git -C <dir> log -1 --format=%ct` 输出 unix 秒。任何失败（无 git、
+/// `git -C <dir> log -1 --format=%ct -- <dir>` 输出 unix 秒。任何失败（无 git、
 /// 非 git 仓库、无 commit）均返回 None，调用方静默回退。
+///
+/// pathspec 限定到子目录本身：monorepo 中 `git -C <子项目> log -1` 返回的是
+/// 父仓库最后一次 commit——workspace 里任何包一提交，全部子项目都变"活跃"，
+/// 陈旧度判定系统性失真（偏向不删，安全方向但卖点失效）。
 fn git_last_commit_ms(project_dir: &Path) -> Option<u64> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project_dir)
-        .args(["log", "-1", "--format=%ct"])
+        .args(["log", "-1", "--format=%ct", "--", "."])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
