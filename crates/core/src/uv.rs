@@ -6,7 +6,7 @@
 //!
 //! 安全边界（比 pnpm 更保守，因为 uv 迁移边界更多）：
 //! - **前置守卫**：未检测到 uv 时直接返回 Err，绝不移动任何文件（破坏性操作仅在
-//!   确认工具可用后才发生）。
+//!   确认工具可用后才发生；dry-run 预演除外——预演不依赖 uv 已安装）。
 //! - 真实迁移时，先把旧 `.venv` 移入回收站（可恢复），再 `uv venv` + 安装。
 //! - 安装失败不影响已被回收站保护的旧 `.venv`，用户可恢复后手动处理。
 
@@ -114,13 +114,9 @@ pub fn migrate_to_uv(dir: &Path, dry_run: bool) -> Result<MigratePyReport, Strin
         return Err("未能识别 Python 包管理器".into());
     }
 
-    // 前置守卫：未装 uv 直接拒绝，零破坏（uv 迁移边界多，安全优先）。
-    if !uv_available() {
-        return Err(
-            "未检测到 uv（安装：https://docs.astral.sh/uv/getting-started/installation/）。迁移不执行任何修改。".into(),
-        );
-    }
-
+    // dry-run 只报告"会做什么"，不依赖 uv 已安装——预演本来就该在
+    // 决定装 uv 之前可用（此前顺序相反导致无 uv 环境下 dry-run 报错，
+    // CI 三平台测试自 0.2.0 起一直红）。
     if dry_run {
         return Ok(MigratePyReport {
             from_pm,
@@ -130,6 +126,13 @@ pub fn migrate_to_uv(dir: &Path, dry_run: bool) -> Result<MigratePyReport, Strin
             error: None,
             dry_run,
         });
+    }
+
+    // 前置守卫：未装 uv 直接拒绝，零破坏（uv 迁移边界多，安全优先）。
+    if !uv_available() {
+        return Err(
+            "未检测到 uv（安装：https://docs.astral.sh/uv/getting-started/installation/）。迁移不执行任何修改。".into(),
+        );
     }
 
     // 1) 备份旧 .venv 到回收站，立即释放磁盘（可恢复）
