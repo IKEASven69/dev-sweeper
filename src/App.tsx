@@ -109,6 +109,36 @@ export default function App() {
   const [mode, setMode] = useState<"clean" | "deps" | "caches" | "archive" | "excludes">("clean");
   // 扫描代际号：每次 startScan 自增，用于丢弃上一轮扫描的迟到事件
   const scanGenRef = useRef(0);
+  // scan:size 节流缓冲：每个产物一次 setArtifacts 会在数千产物时触发数千次
+  // 全量列表重渲染；改为累积到 Map（后到覆盖同 id），约 50ms 定时批量应用。
+  // 代际过滤仍在入队时做（gen 变更只发生在 startScan，届时缓冲会被清空），
+  // 因此缓冲里只会有当前代际的大小。
+  const pendingSizesRef = useRef<Map<number, number>>(new Map());
+  const sizeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function flushPendingSizes() {
+    if (sizeFlushTimerRef.current != null) {
+      clearTimeout(sizeFlushTimerRef.current);
+      sizeFlushTimerRef.current = null;
+    }
+    const pending = pendingSizesRef.current;
+    if (pending.size === 0) return;
+    pendingSizesRef.current = new Map();
+    setArtifacts((prev) =>
+      prev.map((a) => {
+        const size = pending.get(a.id);
+        return size != null ? { ...a, sizeBytes: size } : a;
+      }),
+    );
+  }
+
+  function resetPendingSizes() {
+    if (sizeFlushTimerRef.current != null) {
+      clearTimeout(sizeFlushTimerRef.current);
+      sizeFlushTimerRef.current = null;
+    }
+    pendingSizesRef.current.clear();
+  }
 
   useEffect(() => {
     const subs = [
@@ -119,9 +149,10 @@ export default function App() {
       }),
       listen<{ gen: number; id: number; size: number }>("scan:size", (e) => {
         if (e.payload.gen !== scanGenRef.current) return;
-        setArtifacts((prev) =>
-          prev.map((a) => (a.id === e.payload.id ? { ...a, sizeBytes: e.payload.size } : a)),
-        );
+        pendingSizesRef.current.set(e.payload.id, e.payload.size);
+        if (sizeFlushTimerRef.current == null) {
+          sizeFlushTimerRef.current = setTimeout(flushPendingSizes, 50);
+        }
       }),
       listen<{ gen: number; scannedDirs: number }>("scan:progress", (e) => {
         if (e.payload.gen !== scanGenRef.current) return;
@@ -129,6 +160,8 @@ export default function App() {
       }),
       listen<{ gen: number; cancelled: boolean; elapsedMs: number }>("scan:done", (e) => {
         if (e.payload.gen !== scanGenRef.current) return;
+        // 收尾前把缓冲里的大小一次性应用，避免丢掉最后一批（含取消收尾）
+        flushPendingSizes();
         setScanning(false);
         setCancelled(e.payload.cancelled);
         setLastElapsedMs(e.payload.elapsedMs);
@@ -140,6 +173,7 @@ export default function App() {
     ];
     return () => {
       subs.forEach((s) => s.then((un) => un()));
+      if (sizeFlushTimerRef.current != null) clearTimeout(sizeFlushTimerRef.current);
     };
   }, []);
 
@@ -201,6 +235,7 @@ export default function App() {
     // 代际号先自增再传给后端：本轮扫描的所有事件都带它，
     // 上一轮的迟到事件（id 会从 0 重编号发生碰撞）按代际丢弃
     const gen = ++scanGenRef.current;
+    resetPendingSizes(); // 丢弃上一轮可能残留的大小缓冲（含未触发的定时器）
     setArtifacts([]);
     setSelected(new Set());
     setLastReport(null);
