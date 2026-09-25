@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
@@ -38,10 +39,28 @@ pub fn scan_artifacts(
     rules: &[&'static CleanRule],
     cancel: &AtomicBool,
     excludes: &[String],
+    on_found: impl FnMut(&Artifact),
+    on_progress: impl FnMut(usize),
+) -> Vec<Artifact> {
+    scan_artifacts_with_cache(root, rules, cancel, excludes, on_found, on_progress).0
+}
+
+/// 与 `scan_artifacts` 相同，但把本次扫描的 git 陈旧度缓存一并返回，
+/// 供测试断言"同 project_dir 只查询一次"。
+pub(crate) fn scan_artifacts_with_cache(
+    root: &Path,
+    rules: &[&'static CleanRule],
+    cancel: &AtomicBool,
+    excludes: &[String],
     mut on_found: impl FnMut(&Artifact),
     mut on_progress: impl FnMut(usize),
-) -> Vec<Artifact> {
+) -> (Vec<Artifact>, HashMap<PathBuf, Option<u64>>) {
     let mut found = Vec::new();
+    // git 陈旧度查询缓存（key = project_dir）：同一项目下常有多个产物
+    // （如 .NET 的 bin+obj、Unity 的多个缓存目录），不缓存则每个产物都要
+    // spawn 一次 git——一次扫数千产物时是纯粹的重复开销。失败（None）也
+    // 缓存，同一目录的失败结果不会因为重试而改变。
+    let mut git_cache: HashMap<PathBuf, Option<u64>> = HashMap::new();
     let mut scanned_dirs = 0usize;
     let mut it = WalkDir::new(root).follow_links(false).into_iter();
     while let Some(entry) = it.next() {
@@ -73,14 +92,14 @@ pub fn scan_artifacts(
             if excludes.iter().any(|ex| path_excluded(&path_str, ex)) {
                 continue;
             }
-            let artifact = build_artifact(found.len() as u32, rule, entry.path());
+            let artifact = build_artifact(found.len() as u32, rule, entry.path(), &mut git_cache);
             on_found(&artifact);
             found.push(artifact);
         }
     }
     // 终态进度（无论取消与否，让 UI 收尾）
     on_progress(scanned_dirs);
-    found
+    (found, git_cache)
 }
 
 /// 判定产物路径是否被排除前缀命中。统一用 `/` 作分隔符比较，消除平台差异。
@@ -104,7 +123,12 @@ fn match_rule(path: &Path, name: &str, rules: &[&'static CleanRule]) -> Option<&
         .copied()
 }
 
-fn build_artifact(id: u32, rule: &'static CleanRule, path: &Path) -> Artifact {
+fn build_artifact(
+    id: u32,
+    rule: &'static CleanRule,
+    path: &Path,
+    git_cache: &mut HashMap<PathBuf, Option<u64>>,
+) -> Artifact {
     let project_dir = path.parent().unwrap_or(path);
     Artifact {
         id,
@@ -113,7 +137,7 @@ fn build_artifact(id: u32, rule: &'static CleanRule, path: &Path) -> Artifact {
         project_dir: project_dir.to_string_lossy().into_owned(),
         project_name: project_name(rule, project_dir),
         size_bytes: None,
-        last_active_ms: last_active_ms(project_dir),
+        last_active_ms: last_active_ms(project_dir, git_cache),
         regen_hint: rule.regen_hint.to_string(),
         risk: match rule.risk {
             crate::rules::Risk::Safe => "safe".into(),
@@ -144,7 +168,10 @@ fn project_name(rule: &CleanRule, project_dir: &Path) -> String {
 /// commit 时间比 mtime 更能反映真实开发活动（依赖文件 mtime 可能被
 /// 安装/构建工具触碰而不代表手写改动）。git 不可用或非 git 项目时
 /// 自动回退到纯 mtime。
-fn last_active_ms(project_dir: &Path) -> Option<u64> {
+///
+/// `git_cache`：本扫描内按 project_dir 复用 git 查询结果（含失败），同项目
+/// 多个产物只 spawn 一次 git。
+fn last_active_ms(project_dir: &Path, git_cache: &mut HashMap<PathBuf, Option<u64>>) -> Option<u64> {
     const CANDIDATES: &[&str] = &[
         "package.json",
         "Cargo.toml",
@@ -164,8 +191,13 @@ fn last_active_ms(project_dir: &Path) -> Option<u64> {
         .filter_map(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .max();
-    // git last-commit（秒级时间戳）。失败静默回退。
-    let from_git = git_last_commit_ms(project_dir);
+    // git last-commit（秒级时间戳）。失败静默回退；同扫描内同目录走缓存。
+    let from_git = match git_cache.entry(project_dir.to_path_buf()) {
+        std::collections::hash_map::Entry::Occupied(hit) => *hit.get(),
+        std::collections::hash_map::Entry::Vacant(miss) => {
+            *miss.insert(git_last_commit_ms(project_dir))
+        }
+    };
     match (from_mtime, from_git) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (Some(a), None) => Some(a),
@@ -227,4 +259,57 @@ pub fn dir_size(path: &Path) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .map(|m| m.len())
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_query_hits_cache_for_same_project_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 预置一个远大于任何真实时间戳的"未来"值：若 last_active_ms 真的
+        // spawn git（绕过缓存），结果不可能超过现在；走缓存则精确等于预置值。
+        let future: u64 = 4_102_444_800_000; // 2100-01-01，毫秒
+        let mut cache = HashMap::new();
+        cache.insert(tmp.path().to_path_buf(), Some(future));
+        assert_eq!(
+            last_active_ms(tmp.path(), &mut cache),
+            Some(future),
+            "缓存命中时不应再 spawn git"
+        );
+        // 重复查询同目录仍命中，缓存不增长
+        assert_eq!(last_active_ms(tmp.path(), &mut cache), Some(future));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn scan_queries_git_once_per_project_dir() {
+        // 同一 .NET 项目下 bin + obj 两个产物 → 只应有一条 git 缓存记录
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("app/bin")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("app/obj")).unwrap();
+        std::fs::write(tmp.path().join("app/app.csproj"), "<Project/>").unwrap();
+
+        let rules = crate::rules::select_rules(&[]);
+        let cancel = AtomicBool::new(false);
+        let (found, cache) = scan_artifacts_with_cache(
+            tmp.path(),
+            &rules,
+            &cancel,
+            &[],
+            |_| {},
+            |_| {},
+        );
+        assert_eq!(found.len(), 2, "app 下应识别 bin + obj 两个产物");
+        assert_eq!(
+            cache.len(),
+            1,
+            "同一 project_dir 只应查询一次 git，实际缓存: {cache:?}"
+        );
+        assert!(
+            cache.contains_key(tmp.path().join("app").as_path()),
+            "缓存 key 应是 project_dir"
+        );
+    }
 }
