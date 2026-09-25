@@ -25,6 +25,8 @@ interface DeleteReport {
   deleted: string[];
   failed: [string, string][];
   dryRun: boolean;
+  /** 被 cancel_delete 中途取消（剩余项未处理） */
+  cancelled: boolean;
 }
 
 /* 分类色按固定槽位顺序分配（dataviz 暗面校验通过的顺序），标签文字不沾系列色 */
@@ -161,10 +163,11 @@ export default function App() {
   // 全局键盘：Esc 关弹窗/取消扫描，Ctrl/Cmd+A 全选产物
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // Esc：优先关确认弹窗，否则取消进行中的扫描
+      // Esc：优先关确认弹窗（删除中则取消删除），否则取消进行中的扫描
       if (e.key === "Escape") {
         if (confirming) {
           if (!deleting) setConfirming(false);
+          else cancelDelete();
           e.preventDefault();
         } else if (scanning) {
           cancelScan();
@@ -217,6 +220,15 @@ export default function App() {
   async function cancelScan() {
     try {
       await invoke("cancel_scan");
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  /** 取消进行中的批量删除：已入回收站的不恢复，剩余项保留在列表里。 */
+  async function cancelDelete() {
+    try {
+      await invoke("cancel_delete");
     } catch (e) {
       console.error(e);
     }
@@ -777,6 +789,11 @@ export default function App() {
             <>
               <span style={{ color: "var(--accent)" }}>🔍</span> 预演：{lastReport.deleted.length} 项可删，
               实际未删除
+              {lastReport.cancelled && (
+                <div className="mt-1 text-xs" style={{ color: "var(--warning)" }}>
+                  ⏱ 校验被取消，剩余项未检查。
+                </div>
+              )}
               {lastReport.failed.length > 0 && (
                 <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
                   <div>✕ {lastReport.failed.length} 项会被拒：</div>
@@ -791,6 +808,11 @@ export default function App() {
             <>
               <span style={{ color: "var(--good)" }}>✓</span> 已移入回收站{" "}
               {lastReport.deleted.length} 项，可随时恢复
+              {lastReport.cancelled && (
+                <div className="mt-1 text-xs" style={{ color: "var(--warning)" }}>
+                  ⏱ 删除被取消：剩余项未处理，已保留在列表与勾选中。
+                </div>
+              )}
               {lastReport.failed.length > 0 && (
                 <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
                   <div>✕ {lastReport.failed.length} 项失败（已保留勾选）：</div>
@@ -838,14 +860,23 @@ export default function App() {
             </div>
             <div className="px-5 py-4 border-t border-[var(--grid)] flex items-center gap-3 justify-end">
               {deleting && progress && (
-                <div className="mr-auto flex items-center gap-2 text-xs text-[var(--muted)] w-48">
-                  <span className="flex-1 h-1 rounded-full bg-[var(--grid)] overflow-hidden">
-                    <span
-                      className="block h-full rounded-full bg-[var(--accent)] transition-[width]"
-                      style={{ width: `${(progress.done / progress.total) * 100}%` }}
-                    />
-                  </span>
-                  {progress.done}/{progress.total}
+                <div className="mr-auto flex items-center gap-3">
+                  <div className="flex items-center gap-2 text-xs text-[var(--muted)] w-48">
+                    <span className="flex-1 h-1 rounded-full bg-[var(--grid)] overflow-hidden">
+                      <span
+                        className="block h-full rounded-full bg-[var(--accent)] transition-[width]"
+                        style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                      />
+                    </span>
+                    {progress.done}/{progress.total}
+                  </div>
+                  <button
+                    onClick={cancelDelete}
+                    className="px-2.5 py-1 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--critical)] hover:text-[var(--critical)] text-xs text-[var(--ink-2)]"
+                    title="停止处理剩余项（已入回收站的不恢复）；Esc 同效"
+                  >
+                    取消删除
+                  </button>
                 </div>
               )}
               <button

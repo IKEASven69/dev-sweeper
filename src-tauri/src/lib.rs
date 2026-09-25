@@ -16,6 +16,11 @@ use dev_sweeper_core::{
 /// 用 Arc 让 scan 线程（spawn_blocking）持有副本，cancel_scan 命令通过 State 置位。
 type CancelSlot = Arc<Mutex<Option<Arc<AtomicBool>>>>;
 
+/// 批量删除的取消槽：与扫描槽同构，但独立管理（Tauri State 按类型区分）。
+/// 批量删除可能长达数分钟（每个目录都要走回收站），必须可中途取消。
+#[derive(Clone)]
+struct DeleteCancelSlot(CancelSlot);
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct FoundEvent {
@@ -68,6 +73,8 @@ struct DeleteReport {
     failed: Vec<(String, String)>,
     /// dry_run=true 时 deleted 列表实际是"本会删除"的清单，未真正执行
     dry_run: bool,
+    /// 被 cancel_delete 中途取消（剩余项未处理，保留在列表里）
+    cancelled: bool,
 }
 
 #[tauri::command]
@@ -149,13 +156,32 @@ async fn cancel_scan(state: State<'_, CancelSlot>) -> Result<bool, String> {
 #[tauri::command]
 async fn delete_artifacts(
     app: AppHandle,
+    state: State<'_, DeleteCancelSlot>,
     paths: Vec<String>,
     dry_run: bool,
 ) -> Result<DeleteReport, String> {
+    // State<'_> 不能跨 spawn_blocking；先 clone 出内部 Arc。
+    let cancel_slot: CancelSlot = state.inner().0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let total = paths.len();
-        let mut report = DeleteReport { deleted: Vec::new(), failed: Vec::new(), dry_run };
+        let mut report = DeleteReport {
+            deleted: Vec::new(),
+            failed: Vec::new(),
+            dry_run,
+            cancelled: false,
+        };
+        // 注册本轮删除的取消标志（供 cancel_delete 置位）
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+            *slot = Some(cancel.clone());
+        }
         for (i, path) in paths.into_iter().enumerate() {
+            // 取消检查点：每个条目处理前检查，置位即停（剩余项不处理也不算失败）
+            if cancel.load(Ordering::Relaxed) {
+                report.cancelled = true;
+                break;
+            }
             let result = if dry_run {
                 core::delete_to_trash_dry_run(Path::new(&path))
             } else {
@@ -176,10 +202,29 @@ async fn delete_artifacts(
                 Err(e) => report.failed.push((path, e)),
             }
         }
+        // 收尾：仅当槽里仍是本轮注册的 Arc 时才清（与 scan 收尾同一竞态防护）
+        {
+            let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+            if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+                *slot = None;
+            }
+        }
         Ok(report)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 取消正在进行的批量删除（若有）。已在回收站里的项不会恢复。立即返回。
+#[tauri::command]
+async fn cancel_delete(state: State<'_, DeleteCancelSlot>) -> Result<bool, String> {
+    let slot = state.inner().0.lock().map_err(|e| e.to_string())?;
+    if let Some(cancel) = slot.as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+        Ok(true)
+    } else {
+        Ok(false) // 没有正在进行的删除
+    }
 }
 
 #[tauri::command]
@@ -308,12 +353,14 @@ async fn restore_archive(
 pub fn run() {
     tauri::Builder::default()
         .manage::<CancelSlot>(Arc::new(Mutex::new(None)))
+        .manage::<DeleteCancelSlot>(DeleteCancelSlot(Arc::new(Mutex::new(None))))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             scan,
             cancel_scan,
             delete_artifacts,
+            cancel_delete,
             analyze_deps,
             prune_deps,
             migrate_to_pnpm,
