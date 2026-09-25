@@ -6,6 +6,8 @@ pub mod rules;
 pub mod scan;
 pub mod uv;
 
+mod proc;
+
 pub use caches::{
     discover_global_caches, purge_cache, CacheEco, CacheEntry, CachePurgeReport,
 };

@@ -11,6 +11,7 @@
 //! - 安装失败不影响已被回收站保护的旧 `.venv`，用户可恢复后手动处理。
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use serde::Serialize;
 
@@ -100,7 +101,15 @@ fn looks_like_python(dir: &Path) -> bool {
 ///
 /// 安全边界：与 `migrate_to_pnpm` 一致，删除一律走回收站（`trash::delete`），永不
 /// `remove_dir_all`；安装失败不影响已被回收站保护的旧 `.venv`，用户可随时恢复。
-pub fn migrate_to_uv(dir: &Path, dry_run: bool) -> Result<MigratePyReport, String> {
+///
+/// `cancel` 置位即 kill 正在运行的 uv 子进程并停止迁移；`on_line` 逐行转发
+/// 子进程输出（core 不发事件，转发目标由调用方注入）。
+pub fn migrate_to_uv(
+    dir: &Path,
+    dry_run: bool,
+    cancel: &AtomicBool,
+    mut on_line: impl FnMut(&str),
+) -> Result<MigratePyReport, String> {
     if !looks_like_python(dir) {
         return Err(
             "未检测到 Python 项目（需 requirements.txt / pyproject.toml / setup.py）".into(),
@@ -156,15 +165,15 @@ pub fn migrate_to_uv(dir: &Path, dry_run: bool) -> Result<MigratePyReport, Strin
         }
     }
 
-    // 2) uv venv + 按清单安装
-    let mut result: Result<(), String> = run_uv(&["venv"], dir);
+    // 2) uv venv + 按清单安装；取消会 kill 子进程，旧 .venv 已在回收站可恢复
+    let mut result: Result<(), String> = run_uv(&["venv"], dir, cancel, &mut on_line);
     if result.is_ok() {
         if dir.join("pyproject.toml").is_file() {
-            result = run_uv(&["sync"], dir);
+            result = run_uv(&["sync"], dir, cancel, &mut on_line);
         } else if dir.join("requirements.txt").is_file() {
-            result = run_uv(&["pip", "install", "-r", "requirements.txt"], dir);
+            result = run_uv(&["pip", "install", "-r", "requirements.txt"], dir, cancel, &mut on_line);
         } else if dir.join("setup.py").is_file() {
-            result = run_uv(&["pip", "install", "-e", "."], dir);
+            result = run_uv(&["pip", "install", "-e", "."], dir, cancel, &mut on_line);
         }
     }
     let reinstalled = result.is_ok();
@@ -180,13 +189,22 @@ pub fn migrate_to_uv(dir: &Path, dry_run: bool) -> Result<MigratePyReport, Strin
     })
 }
 
-/// 运行 uv 子命令。
-fn run_uv(args: &[&str], dir: &Path) -> Result<(), String> {
+/// 运行 uv 子命令：stdout/stderr 逐行经 `on_line` 转发（此前继承 stdio，
+/// GUI 里零反馈）；`cancel` 置位即 kill 子进程。
+fn run_uv(
+    args: &[&str],
+    dir: &Path,
+    cancel: &AtomicBool,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     let full: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    match std::process::Command::new("uv").args(&full).current_dir(dir).status() {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("`uv {}` 退出码 {}", full.join(" "), s)),
-        Err(e) => Err(format!("无法执行 `uv`: {e}")),
+    match crate::proc::run_streamed("uv", &full, dir, cancel, &mut *on_line) {
+        Ok(crate::proc::StreamOutcome::Exited(s)) if s.success() => Ok(()),
+        Ok(crate::proc::StreamOutcome::Exited(s)) => {
+            Err(format!("`uv {}` 退出码 {}", full.join(" "), s))
+        }
+        Ok(crate::proc::StreamOutcome::Cancelled) => Err(crate::proc::CANCEL_MSG.into()),
+        Err(e) => Err(e),
     }
 }
 
@@ -224,7 +242,7 @@ mod tests {
     fn migrate_rejects_non_python() {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("README.md"), "hi");
-        assert!(migrate_to_uv(tmp.path(), true).is_err());
+        assert!(migrate_to_uv(tmp.path(), true, &AtomicBool::new(false), |_| {}).is_err());
     }
 
     #[test]
@@ -232,14 +250,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("pyproject.toml"), "[project]\nname = \"x\"\n");
         touch(&tmp.path().join("uv.lock"), "version: 1\n");
-        assert!(migrate_to_uv(tmp.path(), true).is_err());
+        assert!(migrate_to_uv(tmp.path(), true, &AtomicBool::new(false), |_| {}).is_err());
     }
 
     #[test]
     fn migrate_dry_run_reports_action() {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("requirements.txt"), "requests==2.31.0\n");
-        let rep = migrate_to_uv(tmp.path(), true).unwrap();
+        let rep = migrate_to_uv(tmp.path(), true, &AtomicBool::new(false), |_| {}).unwrap();
         assert!(rep.dry_run);
         assert_eq!(rep.from_pm, PyPmKind::Pip);
         assert!(!rep.reinstalled);
@@ -253,14 +271,14 @@ mod tests {
             eprintln!("跳过真实迁移：uv 已安装，但联网安装受限于沙箱网络，避免挂起");
             let tmp = tempfile::tempdir().unwrap();
             touch(&tmp.path().join("requirements.txt"), "requests==2.31.0\n");
-            let rep = migrate_to_uv(tmp.path(), true).unwrap();
+            let rep = migrate_to_uv(tmp.path(), true, &AtomicBool::new(false), |_| {}).unwrap();
             assert!(rep.dry_run);
             assert!(!tmp.path().join(".venv").exists(), "dry-run 不应创建 .venv");
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("requirements.txt"), "requests==2.31.0\n");
-        let res = migrate_to_uv(tmp.path(), false);
+        let res = migrate_to_uv(tmp.path(), false, &AtomicBool::new(false), |_| {});
         assert!(res.is_err(), "未装 uv 时必须拒绝迁移");
         assert!(
             !tmp.path().join(".venv").exists(),

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { fmtSize } from "./lib/format";
 
@@ -57,6 +58,35 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
   const [migrating, setMigrating] = useState(false);
   const [migrateResult, setMigrateResult] = useState<MigrateReport | null>(null);
   const [migrateConfirming, setMigrateConfirming] = useState(false);
+  // 迁移子进程输出尾部（migrate:log 逐行转发来；80ms 批量应用，只留尾部若干行）
+  const [migrateLog, setMigrateLog] = useState<string[]>([]);
+  const migrateLogBufRef = useRef<string[]>([]);
+  const migrateLogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function flushMigrateLog() {
+    if (migrateLogTimerRef.current != null) {
+      clearTimeout(migrateLogTimerRef.current);
+      migrateLogTimerRef.current = null;
+    }
+    const buf = migrateLogBufRef.current;
+    if (buf.length === 0) return;
+    migrateLogBufRef.current = [];
+    setMigrateLog((prev) => [...prev, ...buf].slice(-12));
+  }
+
+  // 迁移输出转发：pnpm/uv 子进程逐行 → migrate:log 事件 → 尾部展示
+  useEffect(() => {
+    const sub = listen<{ line: string }>("migrate:log", (e) => {
+      migrateLogBufRef.current.push(e.payload.line);
+      if (migrateLogTimerRef.current == null) {
+        migrateLogTimerRef.current = setTimeout(flushMigrateLog, 80);
+      }
+    });
+    return () => {
+      void sub.then((un) => un());
+      if (migrateLogTimerRef.current != null) clearTimeout(migrateLogTimerRef.current);
+    };
+  }, []);
 
   // 项目目录变化时清空旧结果
   useEffect(() => {
@@ -67,6 +97,8 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
     setMigrateResult(null);
     setMigrateConfirming(false);
     setMigrating(false);
+    setMigrateLog([]);
+    migrateLogBufRef.current = [];
   }, [projectDir]);
 
   // 响应顶栏"分析依赖"按钮
@@ -143,6 +175,8 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
   async function doMigrate(dry: boolean) {
     if (!report) return;
     setMigrating(true);
+    setMigrateLog([]);
+    migrateLogBufRef.current = [];
     try {
       const r = await invoke<MigrateReport>("migrate_to_pnpm", {
         projectDir,
@@ -157,6 +191,15 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
     } finally {
       setMigrating(false);
       setMigrateConfirming(false);
+    }
+  }
+
+  /** 取消进行中的迁移：kill pnpm/uv 子进程，已完成步骤不回滚（旧目录在回收站可恢复）。 */
+  async function cancelMigrate() {
+    try {
+      await invoke("cancel_migrate");
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -446,8 +489,28 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
                 <code>pnpm import</code> + <code>pnpm install</code> 重建依赖。pnpm 的内容寻址全局存储可跨项目去重，省出大量空间。
               </p>
             </div>
+            {/* 迁移中：子进程输出尾部 + 取消按钮 */}
+            {migrating && (
+              <div className="px-5 py-3 border-b border-[var(--grid)]">
+                <div className="text-xs text-[var(--muted)] mb-1.5 flex items-center gap-2">
+                  <span className="size-3 rounded-full border-2 border-[var(--grid)] border-t-[var(--accent)] animate-spin" />
+                  迁移输出（尾部 {migrateLog.length} 行）
+                </div>
+                <pre className="text-[11px] leading-4 text-[var(--ink-2)] max-h-36 overflow-auto bg-black/30 rounded-lg p-2.5 whitespace-pre-wrap break-all font-mono">
+                  {migrateLog.length > 0 ? migrateLog.join("\n") : "（等待 pnpm 输出…）"}
+                </pre>
+              </div>
+            )}
             <div className="px-5 py-4 border-t border-[var(--grid)] flex items-center gap-3 justify-end">
-              {migrating && <div className="mr-auto text-xs text-[var(--muted)]">处理中…</div>}
+              {migrating && (
+                <button
+                  onClick={cancelMigrate}
+                  className="mr-auto px-3 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--critical)] hover:text-[var(--critical)] text-sm text-[var(--ink-2)]"
+                  title="终止 pnpm 子进程；已完成步骤不回滚（旧 node_modules 在回收站可恢复）"
+                >
+                  取消迁移
+                </button>
+              )}
               <button
                 onClick={() => setMigrateConfirming(false)}
                 disabled={migrating}

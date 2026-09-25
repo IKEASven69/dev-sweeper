@@ -14,6 +14,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use serde::Serialize;
 
@@ -676,7 +677,15 @@ pub struct MigrateReport {
 ///
 /// 安全边界：与 `prune_deps` 一致，删除一律走回收站（`trash::delete`），永不 `remove_dir_all`；
 /// 安装失败不影响已被回收站保护的旧 `node_modules`，用户可随时恢复。
-pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, String> {
+///
+/// `cancel` 置位即 kill 正在运行的 pnpm 子进程并停止迁移；`on_line` 逐行转发
+/// 子进程输出（core 不发事件，转发目标由调用方注入）。
+pub fn migrate_to_pnpm(
+    dir: &Path,
+    dry_run: bool,
+    cancel: &AtomicBool,
+    mut on_line: impl FnMut(&str),
+) -> Result<MigrateReport, String> {
     if detect_eco(dir) != Eco::Node {
         return Err("仅支持 Node 项目（需 package.json）".into());
     }
@@ -703,8 +712,9 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
     }
 
     // 1) 先用旧锁文件生成 pnpm-lock.yaml。pnpm import 只读旧锁文件、不碰
-    //    node_modules；失败则项目原封不动，直接返回，不进入任何回收站操作。
-    if let Err(e) = run_pnpm(&["import"], dir) {
+    //    node_modules；失败（含取消）则项目原封不动，直接返回，不进入任何
+    //    回收站操作——"import 先行"的安全顺序不可破坏。
+    if let Err(e) = run_pnpm(&["import"], dir, cancel, &mut on_line) {
         return Ok(MigrateReport {
             from_pm,
             freed_bytes: 0,
@@ -766,8 +776,9 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
         }
     }
 
-    // 3) 重新安装（优先全局 pnpm，回退 npx pnpm）
-    let result = run_pnpm(&["install"], dir);
+    // 3) 重新安装（优先全局 pnpm，回退 npx pnpm）；取消会 kill 子进程，
+    //    旧 node_modules 已在回收站，可恢复后手动重装
+    let result = run_pnpm(&["install"], dir, cancel, &mut on_line);
     let reinstalled = result.is_ok();
     let error = result.err();
 
@@ -782,7 +793,15 @@ pub fn migrate_to_pnpm(dir: &Path, dry_run: bool) -> Result<MigrateReport, Strin
 }
 
 /// 运行 pnpm 子命令；优先 `pnpm`，spawn 失败（未安装）时回退 `npx --yes pnpm`。
-fn run_pnpm(args: &[&str], dir: &Path) -> Result<(), String> {
+///
+/// stdout/stderr 逐行经 `on_line` 转发（此前继承 stdio，GUI 里零反馈）；
+/// `cancel` 置位即 kill 当前子进程并返回 Err（取消信息见 `CANCEL_MSG`）。
+fn run_pnpm(
+    args: &[&str],
+    dir: &Path,
+    cancel: &AtomicBool,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     let full: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let candidates: Vec<(String, Vec<String>)> = vec![
         ("pnpm".to_string(), full.clone()),
@@ -797,14 +816,16 @@ fn run_pnpm(args: &[&str], dir: &Path) -> Result<(), String> {
     ];
     let mut last_err = String::new();
     for (cmd, cmd_args) in candidates {
-        match std::process::Command::new(&cmd)
-            .args(&cmd_args)
-            .current_dir(dir)
-            .status()
-        {
-            Ok(s) if s.success() => return Ok(()),
-            Ok(s) => last_err = format!("`{} {}` 退出码 {}; ", cmd, cmd_args.join(" "), s),
-            Err(e) => last_err = format!("无法执行 `{}`: {}; ", cmd, e),
+        match crate::proc::run_streamed(&cmd, &cmd_args, dir, cancel, &mut *on_line) {
+            Ok(crate::proc::StreamOutcome::Exited(s)) if s.success() => return Ok(()),
+            Ok(crate::proc::StreamOutcome::Exited(s)) => {
+                last_err = format!("`{} {}` 退出码 {}; ", cmd, cmd_args.join(" "), s)
+            }
+            // 取消是用户意图，不再回退到 npx 重试
+            Ok(crate::proc::StreamOutcome::Cancelled) => {
+                return Err(crate::proc::CANCEL_MSG.into())
+            }
+            Err(e) => last_err = format!("{e}; "),
         }
     }
     Err(format!("pnpm 执行失败: {}", last_err))
@@ -1077,7 +1098,7 @@ mod tests {
             r#"{"name":"app","dependencies":{}}"#,
         );
         // 没有任何 npm/yarn 锁文件 → 不安全，dry-run 也直接拒绝
-        assert!(migrate_to_pnpm(root, true).is_err());
+        assert!(migrate_to_pnpm(root, true, &AtomicBool::new(false), |_| {}).is_err());
     }
 
     #[test]
@@ -1089,7 +1110,7 @@ mod tests {
             r#"{"name":"app","dependencies":{}}"#,
         );
         touch(&root.join("package-lock.json"), "{}");
-        let rep = migrate_to_pnpm(root, true).unwrap();
+        let rep = migrate_to_pnpm(root, true, &AtomicBool::new(false), |_| {}).unwrap();
         assert!(rep.dry_run);
         assert_eq!(rep.from_pm, PmKind::Npm);
         assert!(!rep.reinstalled);
@@ -1105,7 +1126,7 @@ mod tests {
             r#"{"name":"app","dependencies":{}}"#,
         );
         touch(&root.join("pnpm-lock.yaml"), "{}");
-        assert!(migrate_to_pnpm(root, true).is_err());
+        assert!(migrate_to_pnpm(root, true, &AtomicBool::new(false), |_| {}).is_err());
     }
 
     #[test]
@@ -1139,7 +1160,7 @@ mod tests {
   }
 }"#,
         );
-        let rep = migrate_to_pnpm(root, false).unwrap();
+        let rep = migrate_to_pnpm(root, false, &AtomicBool::new(false), |_| {}).unwrap();
         // pnpm-lock.yaml 由 `pnpm import` 离线生成，是迁移的确定性产物——必须存在
         assert!(
             root.join("pnpm-lock.yaml").is_file(),

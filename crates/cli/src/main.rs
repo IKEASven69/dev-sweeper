@@ -309,7 +309,10 @@ fn main() {
                 println!("已取消。");
                 return;
             }
-            match migrate_to_pnpm(&path, false) {
+            match migrate_to_pnpm(&path, false, &never_cancel(), |line| {
+                // 子进程输出改为 piped 捕获，CLI 里直接打印保持原有"实时可见"体验
+                println!("{line}");
+            }) {
                 Ok(rep) => {
                     if !rep.reinstalled {
                         eprintln!(
@@ -364,7 +367,9 @@ fn main() {
                 println!("已取消。");
                 return;
             }
-            match migrate_to_uv(&path, false) {
+            match migrate_to_uv(&path, false, &never_cancel(), |line| {
+                println!("{line}");
+            }) {
                 Ok(rep) => {
                     if !rep.reinstalled {
                         eprintln!(

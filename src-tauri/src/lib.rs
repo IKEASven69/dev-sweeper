@@ -21,6 +21,17 @@ type CancelSlot = Arc<Mutex<Option<Arc<AtomicBool>>>>;
 #[derive(Clone)]
 struct DeleteCancelSlot(CancelSlot);
 
+/// 迁移（pnpm/uv 子进程）的取消槽：独立于扫描与删除，迁移子进程可被 kill。
+#[derive(Clone)]
+struct MigrateCancelSlot(CancelSlot);
+
+/// migrate:log 事件载荷：迁移子进程的一行输出（stdout/stderr 逐行转发）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MigrateLogEvent {
+    line: String,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct FoundEvent {
@@ -251,26 +262,80 @@ async fn prune_deps(
 
 #[tauri::command]
 async fn migrate_to_pnpm(
+    app: AppHandle,
+    state: State<'_, MigrateCancelSlot>,
     project_dir: String,
     dry_run: bool,
 ) -> Result<MigrateReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dev_sweeper_core::migrate_to_pnpm(Path::new(&project_dir), dry_run)
+    // State<'_> 不能跨 spawn_blocking；先 clone 出内部 Arc。
+    let cancel_slot: CancelSlot = state.inner().0.clone();
+    // 注册本轮迁移的取消标志（供 cancel_migrate 置位）
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+        *slot = Some(cancel.clone());
+    }
+    let app_for_log = app.clone();
+    let cancel_for_task = cancel.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        // 子进程每行输出转成事件发给前端；core 层本身不发事件
+        dev_sweeper_core::migrate_to_pnpm(Path::new(&project_dir), dry_run, &cancel_for_task, |line| {
+            let _ = app_for_log.emit("migrate:log", MigrateLogEvent { line: line.to_string() });
+        })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    // 收尾：仅当槽里仍是本轮注册的 Arc 时才清（与 scan 收尾同一竞态防护）
+    {
+        let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+        if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+            *slot = None;
+        }
+    }
+    result
 }
 
 #[tauri::command]
 async fn migrate_to_uv(
+    app: AppHandle,
+    state: State<'_, MigrateCancelSlot>,
     project_dir: String,
     dry_run: bool,
 ) -> Result<MigratePyReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        dev_sweeper_core::migrate_to_uv(Path::new(&project_dir), dry_run)
+    let cancel_slot: CancelSlot = state.inner().0.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+        *slot = Some(cancel.clone());
+    }
+    let app_for_log = app.clone();
+    let cancel_for_task = cancel.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        dev_sweeper_core::migrate_to_uv(Path::new(&project_dir), dry_run, &cancel_for_task, |line| {
+            let _ = app_for_log.emit("migrate:log", MigrateLogEvent { line: line.to_string() });
+        })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    {
+        let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
+        if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+            *slot = None;
+        }
+    }
+    result
+}
+
+/// 取消正在进行的迁移（若有）：kill 迁移子进程，已完成步骤不回滚。立即返回。
+#[tauri::command]
+async fn cancel_migrate(state: State<'_, MigrateCancelSlot>) -> Result<bool, String> {
+    let slot = state.inner().0.lock().map_err(|e| e.to_string())?;
+    if let Some(cancel) = slot.as_ref() {
+        cancel.store(true, Ordering::Relaxed);
+        Ok(true)
+    } else {
+        Ok(false) // 没有正在进行的迁移
+    }
 }
 
 #[tauri::command]
@@ -354,6 +419,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage::<CancelSlot>(Arc::new(Mutex::new(None)))
         .manage::<DeleteCancelSlot>(DeleteCancelSlot(Arc::new(Mutex::new(None))))
+        .manage::<MigrateCancelSlot>(MigrateCancelSlot(Arc::new(Mutex::new(None))))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -365,6 +431,7 @@ pub fn run() {
             prune_deps,
             migrate_to_pnpm,
             migrate_to_uv,
+            cancel_migrate,
             discover_caches,
             purge_cache,
             discover_archivable,
