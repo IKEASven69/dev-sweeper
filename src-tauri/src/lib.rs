@@ -111,10 +111,14 @@ async fn scan(
             let _ = app_for_size.emit("scan:size", SizeEvent { gen, id, size });
         });
         let cancelled = cancel.load(Ordering::Relaxed);
-        // 扫描结束：清空 state 中的标志
+        // 扫描结束：清空 state 中的标志。仅当槽里仍是本轮注册的那个 Arc 时才清——
+        // 若本轮收尾晚于新一轮扫描注册（极端竞态），无条件清空会误清新一轮的
+        // 取消标志，导致新一轮扫描无法取消。
         {
             let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
-            *slot = None;
+            if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+                *slot = None;
+            }
         }
         let summary = ScanSummary {
             gen,
