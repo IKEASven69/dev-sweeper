@@ -6,10 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::{Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Table};
 use dev_sweeper_core::{
-    analyze_deps, archive_project, compute_sizes, default_archive_dir, delete_to_trash,
-    detect_pypm, discover_archivable, discover_global_caches, migrate_to_pnpm, migrate_to_uv,
-    prune_deps, purge_cache, restore_archive, scan_artifacts, select_rules, ArchivableProject,
-    Artifact, CacheEco, CacheEntry, CachePurgeReport, DepReport, PmKind, PyPmKind,
+    analyze_deps, append_decision, archive_project, compute_sizes, default_archive_dir,
+    delete_to_trash, detect_pypm, discover_archivable, discover_global_caches, migrate_to_pnpm,
+    migrate_to_uv, prune_deps, purge_cache, restore_archive, scan_artifacts, select_rules,
+    ArchivableProject, Artifact, CacheEco, CacheEntry, CachePurgeReport, Decision, DepReport,
+    PmKind, PyPmKind,
 };
 
 /// CLI 不做优雅取消——用户 Ctrl+C 直接终止进程即可。
@@ -69,6 +70,9 @@ enum Cmd {
         /// 预演：只校验不执行，显示"本会移入回收站"的清单
         #[arg(long, short = 'n')]
         dry_run: bool,
+        /// 把删除决策记录到 ~/.dev-sweeper/decisions.jsonl（opt-in）
+        #[arg(long)]
+        log_decisions: bool,
     },
     /// 分析项目依赖，找出未使用/多余的依赖（"重构依赖"瘦身）
     Deps {
@@ -79,6 +83,9 @@ enum Cmd {
         /// 以 JSON 输出（供脚本用）
         #[arg(long)]
         json: bool,
+        /// 把裁剪决策记录到 ~/.dev-sweeper/decisions.jsonl（opt-in）
+        #[arg(long)]
+        log_decisions: bool,
     },
     /// 把 npm/yarn 项目迁移到 pnpm（内容寻址存储，跨项目去重以省磁盘）
     Migrate {
@@ -182,7 +189,7 @@ fn main() {
                 print_table(&artifacts);
             }
         }
-        Cmd::Clean { path, rules, stale_days, exclude, no_size, yes, dry_run } => {
+        Cmd::Clean { path, rules, stale_days, exclude, no_size, yes, dry_run, log_decisions } => {
             let artifacts = scan_and_size(&path, &rules, stale_days, &exclude, no_size);
             if artifacts.is_empty() {
                 println!("没有可清理的产物。");
@@ -197,6 +204,7 @@ fn main() {
                 println!("已取消。");
                 return;
             }
+            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
             let mut freed = 0u64;
             let mut failed = 0usize;
             for a in &artifacts {
@@ -204,6 +212,16 @@ fn main() {
                     Ok(()) => {
                         freed += a.size_bytes.unwrap_or(0);
                         println!("已移入回收站  {}", a.path);
+                        if log_decisions {
+                            let stale_days =
+                                a.last_active_ms.map(|t| now_ms.saturating_sub(t) / 86_400_000);
+                            if let Err(e) = append_decision(
+                                true,
+                                &Decision::delete(&a.path, a.size_bytes, stale_days),
+                            ) {
+                                eprintln!("warning: 决策日志写入失败: {e}");
+                            }
+                        }
                     }
                     Err(e) => {
                         failed += 1;
@@ -224,7 +242,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Cmd::Deps { path, apply, json } => {
+        Cmd::Deps { path, apply, json, log_decisions } => {
             let report = match analyze_deps(&path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -261,6 +279,13 @@ fn main() {
             }
             match prune_deps(&path, &to_remove, false) {
                 Ok(rep) => {
+                    if log_decisions {
+                        for name in &rep.removed {
+                            if let Err(e) = append_decision(true, &Decision::prune(name, None)) {
+                                eprintln!("warning: 决策日志写入失败: {e}");
+                            }
+                        }
+                    }
                     println!(
                         "\n已移除 {} 个依赖，释放 {}，备份: {}",
                         rep.removed.len(),

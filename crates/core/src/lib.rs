@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod caches;
+pub mod datalog;
 pub mod delete;
 pub mod deps;
 pub mod rules;
@@ -15,6 +16,7 @@ pub use archive::{
     archive_project, default_archive_dir, discover_archivable, list_archives, restore_archive,
     ArchiveFile, ArchiveReport, ArchivableProject, RestoreReport,
 };
+pub use datalog::{append_decision, decisions_file, Decision, KIND_DELETE, KIND_PRUNE};
 pub use delete::{delete_to_trash, delete_to_trash_dry_run, validate_artifact_path};
 pub use deps::{
     analyze_deps, detect_eco, detect_pm, migrate_to_pnpm, prune_deps, DepConfidence, DepEntry,

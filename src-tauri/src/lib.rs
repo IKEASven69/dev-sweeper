@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use dev_sweeper_core as core;
@@ -75,6 +75,16 @@ struct DeleteProgress {
     path: String,
     ok: bool,
     error: Option<String>,
+}
+
+/// 单个待删产物：路径 + 前端已知的元数据（决策日志要记 size 与陈旧天数，
+/// 扫描阶段已经算过，删除时直接带上，避免重复统计 I/O）。
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DeleteItem {
+    path: String,
+    size_bytes: Option<u64>,
+    last_active_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -168,13 +178,18 @@ async fn cancel_scan(state: State<'_, CancelSlot>) -> Result<bool, String> {
 async fn delete_artifacts(
     app: AppHandle,
     state: State<'_, DeleteCancelSlot>,
-    paths: Vec<String>,
+    items: Vec<DeleteItem>,
     dry_run: bool,
+    log_decisions: bool,
 ) -> Result<DeleteReport, String> {
     // State<'_> 不能跨 spawn_blocking；先 clone 出内部 Arc。
     let cancel_slot: CancelSlot = state.inner().0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let total = paths.len();
+        let total = items.len();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let mut report = DeleteReport {
             deleted: Vec::new(),
             failed: Vec::new(),
@@ -187,12 +202,13 @@ async fn delete_artifacts(
             let mut slot = cancel_slot.lock().map_err(|e| e.to_string())?;
             *slot = Some(cancel.clone());
         }
-        for (i, path) in paths.into_iter().enumerate() {
+        for (i, item) in items.into_iter().enumerate() {
             // 取消检查点：每个条目处理前检查，置位即停（剩余项不处理也不算失败）
             if cancel.load(Ordering::Relaxed) {
                 report.cancelled = true;
                 break;
             }
+            let path = item.path;
             let result = if dry_run {
                 core::delete_to_trash_dry_run(Path::new(&path))
             } else {
@@ -209,7 +225,23 @@ async fn delete_artifacts(
                 },
             );
             match result {
-                Ok(()) => report.deleted.push(path),
+                Ok(()) => {
+                    // 决策日志（opt-in）：只记真实删除，预演不是决策
+                    if log_decisions && !dry_run {
+                        let stale_days = item
+                            .last_active_ms
+                            .map(|t| now_ms.saturating_sub(t) / 86_400_000);
+                        if let Err(e) =
+                            core::append_decision(
+                                true,
+                                &core::Decision::delete(&path, item.size_bytes, stale_days),
+                            )
+                        {
+                            eprintln!("warning: 决策日志写入失败: {e}");
+                        }
+                    }
+                    report.deleted.push(path);
+                }
                 Err(e) => report.failed.push((path, e)),
             }
         }
@@ -252,9 +284,21 @@ async fn prune_deps(
     project_dir: String,
     remove: Vec<String>,
     dry_run: bool,
+    log_decisions: bool,
 ) -> Result<PruneReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        dev_sweeper_core::prune_deps(Path::new(&project_dir), &remove, dry_run)
+        let rep = dev_sweeper_core::prune_deps(Path::new(&project_dir), &remove, dry_run)?;
+        // 决策日志（opt-in）：只记真实裁剪
+        if log_decisions && !dry_run {
+            for name in &rep.removed {
+                if let Err(e) =
+                    dev_sweeper_core::append_decision(true, &dev_sweeper_core::Decision::prune(name, None))
+                {
+                    eprintln!("warning: 决策日志写入失败: {e}");
+                }
+            }
+        }
+        Ok(rep)
     })
     .await
     .map_err(|e| e.to_string())?

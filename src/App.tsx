@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { daysAgo, fmtDaysAgo, fmtDuration, fmtSize } from "./lib/format";
+import { getLogDecisions, setLogDecisions as persistLogDecisions } from "./lib/settings";
 import DepsPanel from "./DepsPanel";
 import CachesPanel from "./CachesPanel";
 import ArchivePanel from "./ArchivePanel";
@@ -107,6 +108,8 @@ export default function App() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [lastReport, setLastReport] = useState<DeleteReport | null>(null);
   const [mode, setMode] = useState<"clean" | "deps" | "caches" | "archive" | "excludes">("clean");
+  // 决策日志开关（opt-in，localStorage 持久化）：删除时带上路径/大小/陈旧天数
+  const [logDecisions, setLogDecisions] = useState<boolean>(() => getLogDecisions());
   // 扫描代际号：每次 startScan 自增，用于丢弃上一轮扫描的迟到事件
   const scanGenRef = useRef(0);
   // scan:size 节流缓冲：每个产物一次 setArtifacts 会在数千产物时触发数千次
@@ -292,8 +295,13 @@ export default function App() {
     setProgress({ done: 0, total: items.length });
     try {
       const report = await invoke<DeleteReport>("delete_artifacts", {
-        paths: items.map((a) => a.path),
+        items: items.map((a) => ({
+          path: a.path,
+          sizeBytes: a.sizeBytes,
+          lastActiveMs: a.lastActiveMs,
+        })),
         dryRun: false,
+        logDecisions,
       });
       const deletedSet = new Set(report.deleted);
       setArtifacts((prev) => prev.filter((a) => !deletedSet.has(a.path)));
@@ -323,8 +331,13 @@ export default function App() {
     setProgress({ done: 0, total: items.length });
     try {
       const report = await invoke<DeleteReport>("delete_artifacts", {
-        paths: items.map((a) => a.path),
+        items: items.map((a) => ({
+          path: a.path,
+          sizeBytes: a.sizeBytes,
+          lastActiveMs: a.lastActiveMs,
+        })),
         dryRun: true,
+        logDecisions: false, // 预演不是决策，不记日志
       });
       setLastReport({ ...report, dryRun: true });
     } catch (e) {
@@ -892,6 +905,21 @@ export default function App() {
                   </span>
                 </div>
               ))}
+              <label
+                className="flex items-center gap-2 pt-2 mt-1 border-t border-[var(--grid)] text-xs text-[var(--muted)] cursor-pointer"
+                title="开启后每次真实删除都会记录时间、路径、体积与陈旧天数，追加到 ~/.dev-sweeper/decisions.jsonl，供事后审计。默认关闭。"
+              >
+                <input
+                  type="checkbox"
+                  checked={logDecisions}
+                  disabled={deleting}
+                  onChange={(e) => {
+                    setLogDecisions(e.target.checked);
+                    persistLogDecisions(e.target.checked);
+                  }}
+                />
+                记录删除决策（~/.dev-sweeper/decisions.jsonl，默认关闭）
+              </label>
             </div>
             <div className="px-5 py-4 border-t border-[var(--grid)] flex items-center gap-3 justify-end">
               {deleting && progress && (

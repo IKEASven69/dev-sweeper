@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { fmtSize } from "./lib/format";
+import { getLogDecisions, setLogDecisions as persistLogDecisions } from "./lib/settings";
 
 interface DepEntry {
   name: string;
@@ -53,6 +54,8 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
   const analyzeSeqRef = useRef(0);
   const [result, setResult] = useState<PruneReport | null>(null);
   const [confirming, setConfirming] = useState(false);
+  // 决策日志开关（opt-in，localStorage 持久化，与清理面板共用同一设置）
+  const [logDecisions, setLogDecisions] = useState<boolean>(() => getLogDecisions());
 
   // pnpm 迁移相关状态
   const [migrating, setMigrating] = useState(false);
@@ -160,6 +163,7 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
         projectDir,
         remove: names,
         dryRun: dry,
+        logDecisions: !dry && logDecisions, // 预演不是决策，不记日志
       });
       setResult(r);
       setReport(null); // 清单已变，需重新分析
@@ -571,6 +575,21 @@ export default function DepsPanel({ projectDir }: { projectDir: string }) {
                   )}
                 </div>
               ))}
+              <label
+                className="flex items-center gap-2 pt-2 mt-1 border-t border-[var(--grid)] text-xs text-[var(--muted)] cursor-pointer"
+                title="开启后每次真实裁剪都会记录时间与依赖名，追加到 ~/.dev-sweeper/decisions.jsonl。与清理面板共用同一开关，默认关闭。"
+              >
+                <input
+                  type="checkbox"
+                  checked={logDecisions}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setLogDecisions(e.target.checked);
+                    persistLogDecisions(e.target.checked);
+                  }}
+                />
+                记录裁剪决策（~/.dev-sweeper/decisions.jsonl，默认关闭）
+              </label>
             </div>
             <div className="px-5 py-4 border-t border-[var(--grid)] flex items-center gap-3 justify-end">
               {busy && (
