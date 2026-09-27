@@ -122,13 +122,59 @@ sweep restore <归档文件>.tar.gz --dest D:\Projects   # 解回
 - **归档原子性**：先写 `.part` 再改名；还原前 gzip 完整性预检 + staging 中转，失败不留半成品；打包不解引用符号链接
 - 扫描不 follow symlink（pnpm 软链不重复计数），跳过 `.git`，无权限目录静默跳过；嵌套产物不重复记录
 
+## 作为 MCP 工具使用
+
+`crates/mcp` 提供 MCP server（stdio 传输），把扫描/清理/缓存/归档能力直接交给 Claude Desktop、Cursor 等 MCP 客户端里的 agent。工具与 CLI 同源（都走 `crates/core`），安全模型一致。
+
+暴露 6 个工具：
+
+| 工具 | 说明 |
+| --- | --- |
+| `scan(root, rules?, stale_days?, exclude[])` | 产物清单 JSON（只读） |
+| `clean(root, rules?, stale_days?, exclude[], dry_run=true, confirm=false)` | 预演/移入回收站；**真实执行需 `dry_run=false` 且 `confirm=true` 双开关** |
+| `deps(project_dir)` | 未使用依赖报告 JSON（只读） |
+| `caches()` | 全局缓存清单（只读） |
+| `caches_purge(ids, dry_run=true, confirm=false)` | 同上双开关 |
+| `archives_discover(root, stale_days?)` | 沉睡项目清单（只读） |
+
+Claude Desktop 配置（`claude_desktop_config.json` 的 `mcpServers` 字段）：
+
+```json
+{
+  "mcpServers": {
+    "dev-sweeper": {
+      "command": "D:\\path\\to\\sweep-mcp.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+通用 MCP 客户端（Cursor / VS Code MCP / 任何 stdio 客户端）：
+
+```json
+{
+  "mcpServers": {
+    "dev-sweeper": {
+      "command": "sweep-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+构建：`cargo build -p dev-sweeper-mcp`（二进制在 `target/debug|release/sweep-mcp[.exe]`）。
+参数名拼错或规则 id 未知都会直接返回错误（不做静默忽略）；所有破坏性调用默认预演，agent 需先看预演结果再带双开关真实执行。
+
 ## 结构
 
 ```
 crates/core   # 扫描/删除/依赖分析/缓存/归档核心（walkdir + rayon + trash），规则表驱动，57 单测
 crates/cli    # sweep 命令（clap）
+crates/mcp    # sweep-mcp：MCP server（rmcp，stdio 传输）
 src-tauri     # Tauri 壳：命令 + 可取消事件流
-src           # React 前端（Tailwind v4）
+src           # React 前端（Tailwind v4，react-i18next 双语）
 ```
 
 ## License
