@@ -1,0 +1,54 @@
+# dev-sweeper — llms.txt
+
+> 给 AI agent 的项目说明。人类向文档见 README.md；本文件只讲 agent 用它时必须知道的事。
+
+## 这是什么
+
+多生态开发产物扫描清理工具（Rust workspace：core 扫描核心 + sweep CLI + sweep-mcp MCP server + Tauri 桌面壳）。
+扫描 node_modules / target / .venv / __pycache__ 等可再生产物并移入回收站；附带依赖裁剪分析、npm/yarn→pnpm 与 pip/poetry→uv 迁移、全局缓存清理、沉睡项目归档/解回。
+
+## 安全模型（改动删除逻辑前必读）
+
+1. **删除一律走回收站**：所有删除入口都调用 core 的 `delete_to_trash`（trash crate）。仓库内不得出现 `remove_dir_all` 或任何永久删除路径；`trash` 失败即报错，绝不降级为直接删除。
+2. **marker 双闸**：产物识别需要"目录名命中规则"且"项目标记确认"（如 node_modules 需父目录有 package.json；裸 target 不命中）。删除前二次校验 marker；symlink/junction 目标一律拒绝。
+3. **双开关守卫**：MCP 的 `clean` / `caches_purge` 真实执行必须同时传 `dry_run=false` 且 `confirm=true`，缺一即拒绝并在结果里说明。默认一切破坏性调用都是预演。
+4. **excludes 覆盖所有删除入口**：排除（保护）路径前缀在 core 层硬拒绝（清理、归档都要过），新增删除入口必须接 excludes。
+5. CLI 破坏性子命令交互确认默认 No，非交互环境自动拒绝；失败退出码非零。
+
+## CLI 速查（sweep）
+
+```bash
+sweep scan <root> [--rules node,rust] [--stale-days 90] [--exclude PREFIX...] [--no-size] [--json]
+sweep clean <root> [-n 预演] [-y 跳过确认] [--rules ...] [--stale-days ...] [--exclude ...] [--log-decisions]
+sweep deps <project_dir> [--apply] [--json]
+sweep migrate <project_dir> [-n] [-y] [--json]      # npm/yarn → pnpm
+sweep uv-migrate <project_dir> [-n] [-y] [--json]   # pip/poetry/pip-tools → uv
+sweep caches [--apply] [--id ID...] [-n] [--json]
+sweep archives [--root DIR] [--stale-days N] [--exclude ...] [--json]
+sweep archive <project_dir> [--archive-dir DIR] [-n] [-y] [--exclude ...] [--json]
+sweep restore <archive.tar.gz> [--dest DIR] [-n] [--json]
+```
+
+- `--json`：所有列出/报告类输出均有 JSON 形态（dry-run 也有），供脚本/agent 消费；文本输出去向 stdout，警告去向 stderr。
+- 规则 id：node rust maven gradle python-venv python-cache cmake dotnet composer unity unreal godot swift zig elixir cocoapods web-dist（web-dist 默认关）。
+- 迁移会先移走旧目录（回收站）再重建；子进程输出实时打印。
+
+## MCP 接入（sweep-mcp）
+
+`cargo build -p dev-sweeper-mcp` 产出 stdio server。工具：
+
+- `scan(root, rules?, stale_days?, exclude[])` — 产物清单 JSON（只读）
+- `clean(root, rules?, stale_days?, exclude[], dry_run=true, confirm=false)` — 双开关，见安全模型 3
+- `deps(project_dir)` — 未使用依赖报告 JSON（只读）
+- `caches()` — 全局缓存清单（只读）
+- `caches_purge(ids, dry_run=true, confirm=false)` — 双开关
+- `archives_discover(root, stale_days?)` — 沉睡项目清单（只读）
+
+参数名拼错（deny_unknown_fields）或规则 id 未知都会返回错误，不静默忽略。推荐 agent 流程：先只读工具看清单 → 预演 → 向用户确认后带双开关真实执行。
+
+## 代码地图 / 改动约定
+
+- `crates/core`：全部业务逻辑（scan/delete/deps/caches/archive/uv/rules）。core 不依赖 UI/协议框架；新 crate 依赖 core，core 不得反向依赖。
+- `crates/cli`（sweep）、`crates/mcp`（sweep-mcp）、`src-tauri` + `src`（桌面 GUI，react-i18next 双语）。
+- i18n：UI 文案一律走 `src/locales/{zh,en}.json`，zh/en key 集合与插值占位符必须一致（`node scripts/check-locales.mjs`，CI 强制）。CLI 的中文输出不在 i18n 范围。
+- 自查：`cargo test`（workspace）、`pnpm exec tsc --noEmit`、`node scripts/check-locales.mjs`。
