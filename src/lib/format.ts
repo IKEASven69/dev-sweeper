@@ -1,3 +1,5 @@
+import i18n from "../i18n";
+
 export function fmtSize(bytes: number | null | undefined): string {
   if (bytes == null) return "…";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -17,11 +19,13 @@ export function daysAgo(lastActiveMs: number | null | undefined): number | null 
 
 export function fmtDaysAgo(lastActiveMs: number | null | undefined): string {
   const d = daysAgo(lastActiveMs);
-  if (d == null) return "未知";
-  if (d <= 0) return "今天";
-  if (d < 30) return `${d} 天前`;
-  if (d < 365) return `${Math.floor(d / 30)} 个月前`;
-  return `${(d / 365).toFixed(1)} 年前`;
+  // i18next 的 t 在调用时解析当前语言：组件随 useTranslation 重渲染后
+  // 重新调用本函数，即拿到切换后的文案
+  if (d == null) return i18n.t("time.unknown");
+  if (d <= 0) return i18n.t("time.today");
+  if (d < 30) return i18n.t("time.daysAgo", { count: d });
+  if (d < 365) return i18n.t("time.monthsAgo", { count: Math.floor(d / 30) });
+  return i18n.t("time.yearsAgo", { count: (d / 365).toFixed(1) });
 }
 
 /** 毫秒时长格式化为人类可读：<1s 显示毫秒，否则 s，>=60s 显示 m:ss。 */

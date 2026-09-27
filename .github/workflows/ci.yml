@@ -44,3 +44,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: TypeScript 类型检查
         run: pnpm exec tsc --noEmit
+      - name: locale 一致性检查（zh/en key 与占位符）
+        run: node scripts/check-locales.mjs

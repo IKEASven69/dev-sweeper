@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -9,6 +10,7 @@ import DepsPanel from "./DepsPanel";
 import CachesPanel from "./CachesPanel";
 import ArchivePanel from "./ArchivePanel";
 import ExcludesPanel from "./ExcludesPanel";
+import i18n from "./i18n";
 
 interface Artifact {
   id: number;
@@ -83,6 +85,8 @@ function StatTile(props: { label: string; value: string; sub?: string; accent?: 
 }
 
 export default function App() {
+  const { t } = useTranslation();
+  const [lang, setLang] = useState(i18n.language);
   const [root, setRoot] = useState<string>(() => localStorage.getItem("root") ?? "");
   const [excludes, setExcludes] = useState<string[]>(() => {
     try {
@@ -418,7 +422,7 @@ export default function App() {
                   : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
               }`}
             >
-              清理产物
+              {t("top.modeClean")}
             </button>
             <button
               onClick={() => setMode("deps")}
@@ -428,7 +432,7 @@ export default function App() {
                   : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
               }`}
             >
-              依赖瘦身
+              {t("top.modeDeps")}
             </button>
             <button
               onClick={() => setMode("caches")}
@@ -438,7 +442,7 @@ export default function App() {
                   : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
               }`}
             >
-              全局缓存
+              {t("top.modeCaches")}
             </button>
             <button
               onClick={() => setMode("archive")}
@@ -448,7 +452,7 @@ export default function App() {
                   : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
               }`}
             >
-              压缩归档
+              {t("top.modeArchive")}
             </button>
             <button
               onClick={() => setMode("excludes")}
@@ -458,22 +462,41 @@ export default function App() {
                   : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
               }`}
             >
-              排除路径
+              {t("top.modeExcludes")}
             </button>
           </div>
           <div className="flex-1" />
+          {/* 语言切换：changeLanguage 后 useTranslation 的组件即时重渲染 */}
+          <div className="flex items-center rounded-lg bg-[var(--surface)] border border-[var(--hairline)] p-0.5">
+            {(["zh", "en"] as const).map((l) => (
+              <button
+                key={l}
+                onClick={() => {
+                  i18n.changeLanguage(l);
+                  setLang(l);
+                }}
+                className={`px-2 py-0.5 rounded-md text-xs transition-colors ${
+                  lang.startsWith(l)
+                    ? "bg-[var(--accent)] text-white"
+                    : "text-[var(--ink-2)] hover:text-[var(--ink-1)]"
+                }`}
+              >
+                {l === "zh" ? t("top.langZh") : t("top.langEn")}
+              </button>
+            ))}
+          </div>
           <button
             onClick={pickDir}
             className="px-3 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--hairline)] hover:border-[var(--baseline)] text-sm text-[var(--ink-2)]"
           >
-            选择目录
+            {t("top.pickDir")}
           </button>
           <input
             value={root}
             onChange={(e) => setRoot(e.target.value)}
             onBlur={() => localStorage.setItem("root", root)}
             onKeyDown={(e) => e.key === "Enter" && startScan()}
-            placeholder="或直接粘贴路径，回车扫描"
+            placeholder={t("top.rootPlaceholder")}
             className="w-[340px] rounded-lg bg-[var(--surface)] border border-[var(--hairline)] focus:border-[var(--accent)] outline-none px-3 py-1.5 text-sm text-[var(--ink-2)] placeholder:text-[var(--muted)]"
           />
           <button
@@ -486,16 +509,16 @@ export default function App() {
             )}
             {scanning
               ? scanProgress != null
-                ? `扫描中 · ${scanProgress.toLocaleString()} 目录`
-                : "扫描中"
-              : "扫描"}
+                ? t("top.scanningDirs", { count: scanProgress.toLocaleString() })
+                : t("top.scanning")
+              : t("top.scan")}
           </button>
           {scanning && (
             <button
               onClick={cancelScan}
               className="px-3 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--critical)] hover:text-[var(--critical)] text-sm text-[var(--ink-2)]"
             >
-              取消
+              {t("common.cancel")}
             </button>
           )}
           {mode === "deps" && (
@@ -505,14 +528,14 @@ export default function App() {
               }
               className="px-4 py-1.5 rounded-lg bg-[var(--accent)] hover:brightness-110 text-sm font-medium"
             >
-              分析依赖
+              {t("top.analyze")}
             </button>
           )}
         </div>
 
         {cancelled && (
           <div className="text-xs text-[var(--warning)] -mt-1">
-            ⏱ 扫描已取消，显示的是已发现的部分结果（部分大小可能仍为 …，尚未算完）。
+            {t("top.scanCancelled")}
           </div>
         )}
 
@@ -521,26 +544,32 @@ export default function App() {
         {/* 统计卡片 */}
         <div className="flex gap-3">
           <StatTile
-            label="可回收空间"
+            label={t("stats.reclaimable")}
             value={artifacts.length ? fmtSize(totalBytes) : "—"}
-            sub={scanning ? `已发现 ${artifacts.length} 项…` : artifacts.length ? `${artifacts.length} 个产物目录` : "扫描后统计"}
+            sub={
+              scanning
+                ? t("stats.found", { count: artifacts.length })
+                : artifacts.length
+                  ? t("stats.artifactDirs", { count: artifacts.length })
+                  : t("stats.afterScan")
+            }
           />
           <StatTile
-            label={`陈旧项目（超 ${staleDays} 天未动）`}
+            label={t("stats.staleTitle", { days: staleDays })}
             value={artifacts.length ? String(staleItems.length) : "—"}
-            sub={staleItems.length ? `共 ${fmtSize(staleBytes)}，删了最不心疼` : undefined}
+            sub={staleItems.length ? t("stats.staleSub", { size: fmtSize(staleBytes) }) : undefined}
             accent={staleItems.length ? "var(--warning)" : undefined}
           />
           <StatTile
-            label="已选中"
+            label={t("stats.selected")}
             value={selected.size ? fmtSize(selectedBytes) : "—"}
-            sub={selected.size ? `${selected.size} 项待清理` : "勾选后可移入回收站"}
+            sub={selected.size ? t("stats.selectedSub", { count: selected.size }) : t("stats.selectedHint")}
             accent={selected.size ? "var(--accent)" : undefined}
           />
           <StatTile
-            label="上次扫描耗时"
+            label={t("stats.lastScan")}
             value={lastElapsedMs != null ? fmtDuration(lastElapsedMs) : "—"}
-            sub={cancelled ? "已取消（部分结果）" : lastElapsedMs != null ? "完整扫描" : undefined}
+            sub={cancelled ? t("stats.lastScanCancelled") : lastElapsedMs != null ? t("stats.lastScanFull") : undefined}
           />
         </div>
 
@@ -569,7 +598,7 @@ export default function App() {
           })}
           <div className="flex-1" />
           <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
-            <span>陈旧阈值</span>
+            <span>{t("stats.staleThreshold")}</span>
             <input
               type="number"
               min={1}
@@ -589,11 +618,11 @@ export default function App() {
               }}
               className="w-16 rounded-md bg-[var(--surface)] border border-[var(--hairline)] focus:border-[var(--accent)] px-2 py-0.5 text-center text-[var(--ink-2)] outline-none tabular-nums"
             />
-            <span>天未动</span>
+            <span>{t("stats.staleDaysUnit")}</span>
           </div>
           {excludes.length > 0 && (
             <div className="flex items-center gap-1.5 text-xs text-[var(--muted)] flex-wrap">
-              <span>🚫 已排除:</span>
+              <span>{t("stats.excluded")}</span>
               {excludes.map((ex) => {
                 const name = ex.replace(/\\/g, "/").split("/").pop() ?? ex;
                 return (
@@ -606,7 +635,7 @@ export default function App() {
                     <button
                       onClick={() => removeExclude(ex)}
                       className="hover:text-[var(--ink-1)]"
-                      title="移除排除"
+                      title={t("stats.removeExclude")}
                     >
                       ×
                     </button>
@@ -620,13 +649,13 @@ export default function App() {
                 }}
                 className="hover:text-[var(--ink-1)] underline"
               >
-                清空
+                {t("stats.clearExcludes")}
               </button>
               <button
                 onClick={() => setMode("excludes")}
                 className="hover:text-[var(--ink-1)] underline"
               >
-                管理 →
+                {t("stats.manage")}
               </button>
             </div>
           )}
@@ -644,9 +673,9 @@ export default function App() {
             <button
               onClick={() => setSelected(new Set(staleItems.map((a) => a.id)))}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--hairline)] hover:border-[var(--warning)] hover:text-[var(--warning)] text-xs text-[var(--ink-2)] transition-colors"
-              title={`勾选所有超过 ${staleDays} 天未活跃的产物`}
+              title={t("list.selectAllStaleTitle", { days: staleDays })}
             >
-              ⏱ 全选 {staleItems.length} 个陈旧项（{fmtSize(staleBytes)}）
+              {t("list.selectAllStale", { count: staleItems.length, size: fmtSize(staleBytes) })}
             </button>
           )}
           <div className="flex-1" />
@@ -655,7 +684,7 @@ export default function App() {
               onClick={() => setConfirming(true)}
               className="px-3.5 py-1.5 rounded-lg bg-[var(--critical)] hover:brightness-110 text-sm font-medium"
             >
-              移入回收站（{selected.size}）
+              {t("list.toTrash", { count: selected.size })}
             </button>
           )}
         </div>
@@ -669,12 +698,12 @@ export default function App() {
               {scanning ? (
                 <>
                   <span className="size-6 rounded-full border-2 border-[var(--grid)] border-t-[var(--accent)] animate-spin" />
-                  正在扫描…
+                  {t("list.scanningNow")}
                 </>
               ) : (
                 <>
                   <span className="text-3xl">🗂️</span>
-                  <span className="text-sm">选择目录并点击「扫描」，找出可回收的构建产物</span>
+                  <span className="text-sm">{t("list.emptyHint")}</span>
                 </>
               )}
             </div>
@@ -688,7 +717,8 @@ export default function App() {
                   onChange={toggleAll}
                 />
                 <span>
-                  {artifacts.length} 个产物{selected.size > 0 && ` · 已选 ${selected.size}`}
+                  {t("list.count", { count: artifacts.length })}
+                  {selected.size > 0 && ` · ${t("list.selectedCount", { count: selected.size })}`}
                 </span>
                 <div className="flex-1" />
                 <button
@@ -697,7 +727,7 @@ export default function App() {
                     sort === "size" ? "text-[var(--ink-2)] bg-[var(--grid)]/40" : ""
                   }`}
                 >
-                  按大小 {sort === "size" && "▾"}
+                  {t("list.sortBySize")} {sort === "size" && "▾"}
                 </button>
                 <button
                   onClick={() => setSort("stale")}
@@ -705,11 +735,11 @@ export default function App() {
                     sort === "stale" ? "text-[var(--ink-2)] bg-[var(--grid)]/40" : ""
                   }`}
                 >
-                  按活跃度 {sort === "stale" && "▾"}
+                  {t("list.sortByStale")} {sort === "stale" && "▾"}
                 </button>
                 <span className="text-[var(--grid)]">·</span>
                 <kbd className="text-[10px] px-1 py-0.5 rounded border border-[var(--grid)] text-[var(--muted)]">
-                  Ctrl+A 全选
+                  {t("list.selectAllHint")}
                 </kbd>
               </div>
 
@@ -753,17 +783,17 @@ export default function App() {
                             <span
                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] shrink-0"
                               style={{ color: "var(--warning)", background: "rgba(250,178,25,0.12)" }}
-                              title="依赖/环境，删除后重装较慢"
+                              title={t("list.riskNoticeTitle")}
                             >
-                              🟡 重装较慢
+                              {t("list.riskNotice")}
                             </span>
                           ) : (
                             <span
                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] shrink-0 text-[var(--muted)]"
                               style={{ background: "rgba(255,255,255,0.05)" }}
-                              title="构建产物，重新 build 秒级恢复"
+                              title={t("list.riskSafeTitle")}
                             >
-                              🟢 易恢复
+                              {t("list.riskSafe")}
                             </span>
                           )}
                           {isStale(a) && (
@@ -771,7 +801,7 @@ export default function App() {
                               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] shrink-0"
                               style={{ color: "var(--warning)", background: "rgba(250,178,25,0.12)" }}
                             >
-                              ⏱ 陈旧
+                              {t("list.staleBadge")}
                             </span>
                           )}
                           <div className="flex-1" />
@@ -808,14 +838,14 @@ export default function App() {
                       >
                         <button
                           onClick={() => addExclude(a.projectDir)}
-                          title={`排除「${a.projectDir}」（不再扫描此项目）`}
+                          title={t("list.excludeProject", { dir: a.projectDir })}
                           className="text-[var(--muted)] hover:text-[var(--warning)]"
                         >
                           🚫
                         </button>
                         <button
                           onClick={() => revealItemInDir(a.path)}
-                          title="在资源管理器中打开"
+                          title={t("list.reveal")}
                           className="text-[var(--muted)] hover:text-[var(--ink-1)]"
                         >
                           📂
@@ -835,39 +865,43 @@ export default function App() {
         <div className="toast-in fixed bottom-5 right-5 z-20 rounded-xl border border-[var(--hairline)] bg-[var(--surface)] px-4 py-3 text-sm shadow-xl">
           {lastReport.dryRun ? (
             <>
-              <span style={{ color: "var(--accent)" }}>🔍</span> 预演：{lastReport.deleted.length} 项可删，
-              实际未删除
+              <span style={{ color: "var(--accent)" }}>🔍</span>{" "}
+              {t("toast.dryRunTitle", { count: lastReport.deleted.length })}
               {lastReport.cancelled && (
                 <div className="mt-1 text-xs" style={{ color: "var(--warning)" }}>
-                  ⏱ 校验被取消，剩余项未检查。
+                  {t("toast.dryRunCancelled")}
                 </div>
               )}
               {lastReport.failed.length > 0 && (
                 <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
-                  <div>✕ {lastReport.failed.length} 项会被拒：</div>
+                  <div>{t("toast.dryRunRejected", { count: lastReport.failed.length })}</div>
                   {lastReport.failed.slice(0, 3).map(([p, e]) => (
                     <div key={p} className="truncate" title={`${p}\n${e}`}>· {e}</div>
                   ))}
-                  {lastReport.failed.length > 3 && <div>…等共 {lastReport.failed.length} 项</div>}
+                  {lastReport.failed.length > 3 && (
+                    <div>{t("toast.moreCount", { count: lastReport.failed.length })}</div>
+                  )}
                 </div>
               )}
             </>
           ) : (
             <>
-              <span style={{ color: "var(--good)" }}>✓</span> 已移入回收站{" "}
-              {lastReport.deleted.length} 项，可随时恢复
+              <span style={{ color: "var(--good)" }}>✓</span>{" "}
+              {t("toast.deletedTitle", { count: lastReport.deleted.length })}
               {lastReport.cancelled && (
                 <div className="mt-1 text-xs" style={{ color: "var(--warning)" }}>
-                  ⏱ 删除被取消：剩余项未处理，已保留在列表与勾选中。
+                  {t("toast.deleteCancelled")}
                 </div>
               )}
               {lastReport.failed.length > 0 && (
                 <div className="mt-1 text-xs max-w-xs" style={{ color: "var(--critical)" }}>
-                  <div>✕ {lastReport.failed.length} 项失败（已保留勾选）：</div>
+                  <div>{t("toast.deleteFailed", { count: lastReport.failed.length })}</div>
                   {lastReport.failed.slice(0, 3).map(([p, e]) => (
                     <div key={p} className="truncate" title={`${p}\n${e}`}>· {e}</div>
                   ))}
-                  {lastReport.failed.length > 3 && <div>…等共 {lastReport.failed.length} 项</div>}
+                  {lastReport.failed.length > 3 && (
+                    <div>{t("toast.moreCount", { count: lastReport.failed.length })}</div>
+                  )}
                 </div>
               )}
             </>
@@ -881,12 +915,10 @@ export default function App() {
           <div className="bg-[var(--surface)] border border-[var(--hairline)] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl">
             <div className="px-5 py-4 border-b border-[var(--grid)]">
               <h2 className="font-semibold">
-                将 {selectedItems.length} 个目录移入回收站
+                {t("confirm.title", { count: selectedItems.length })}
                 <span className="ml-2 text-[var(--ink-2)] font-normal">{fmtSize(selectedBytes)}</span>
               </h2>
-              <p className="text-sm text-[var(--muted)] mt-1">
-                删除后可在回收站恢复；需要时可按提示重新生成。
-              </p>
+              <p className="text-sm text-[var(--muted)] mt-1">{t("confirm.subtitle")}</p>
             </div>
             <div className="flex-1 overflow-auto px-5 py-3 text-sm space-y-2">
               {selectedItems.map((a) => (
@@ -907,7 +939,7 @@ export default function App() {
               ))}
               <label
                 className="flex items-center gap-2 pt-2 mt-1 border-t border-[var(--grid)] text-xs text-[var(--muted)] cursor-pointer"
-                title="开启后每次真实删除都会记录时间、路径、体积与陈旧天数，追加到 ~/.dev-sweeper/decisions.jsonl，供事后审计。默认关闭。"
+                title={t("confirm.logDecisionsTitle")}
               >
                 <input
                   type="checkbox"
@@ -918,7 +950,7 @@ export default function App() {
                     persistLogDecisions(e.target.checked);
                   }}
                 />
-                记录删除决策（~/.dev-sweeper/decisions.jsonl，默认关闭）
+                {t("confirm.logDecisions")}
               </label>
             </div>
             <div className="px-5 py-4 border-t border-[var(--grid)] flex items-center gap-3 justify-end">
@@ -936,9 +968,9 @@ export default function App() {
                   <button
                     onClick={cancelDelete}
                     className="px-2.5 py-1 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--critical)] hover:text-[var(--critical)] text-xs text-[var(--ink-2)]"
-                    title="停止处理剩余项（已入回收站的不恢复）；Esc 同效"
+                    title={t("common.stopDeleteTitle")}
                   >
-                    取消删除
+                    {t("common.cancelDelete")}
                   </button>
                 </div>
               )}
@@ -947,22 +979,22 @@ export default function App() {
                 disabled={deleting}
                 className="px-4 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--baseline)] text-sm text-[var(--ink-2)]"
               >
-                取消
+                {t("common.cancel")}
               </button>
               <button
                 onClick={doDryRun}
                 disabled={deleting}
                 className="px-3 py-1.5 rounded-lg bg-transparent border border-[var(--hairline)] hover:border-[var(--accent)] hover:text-[var(--accent)] text-sm text-[var(--ink-2)]"
-                title="只校验路径与 marker，不真正删除"
+                title={t("common.previewTitle")}
               >
-                {deleting ? "校验中…" : "先预演"}
+                {deleting ? t("common.previewBusy") : t("common.preview")}
               </button>
               <button
                 onClick={doDelete}
                 disabled={deleting}
                 className="px-4 py-1.5 rounded-lg bg-[var(--critical)] hover:brightness-110 disabled:opacity-50 text-sm font-medium"
               >
-                {deleting ? "删除中…" : "确认移入回收站"}
+                {deleting ? t("common.deleting") : t("common.confirmDelete")}
               </button>
             </div>
           </div>
