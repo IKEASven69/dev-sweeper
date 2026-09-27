@@ -24,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (全 workspace，core+cli+mcp)
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --exclude dev-sweeper --verbose
       # 只编译 core + cli + mcp（不编译 Tauri 壳）——后者在 Linux 需 webview/glib 等
       # 系统库，完整打包交给 release 流程。core+cli+mcp 足以守护扫描/删除逻辑。
       - name: cargo build (core + cli + mcp)
