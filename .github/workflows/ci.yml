@@ -25,10 +25,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (core 单测，含 unix-only 用例)
         run: cargo test -p dev-sweeper-core --verbose
-      # 只编译 core + cli（不编译 Tauri 壳）——后者在 Linux 需 webview/glib 等系统库，
-      # 完整打包交给 release 流程。core+cli 足以守护扫描/删除逻辑。
-      - name: cargo build (core + cli)
-        run: cargo build -p dev-sweeper-core -p dev-sweeper-cli --verbose
+      # 只编译 core + cli + mcp（不编译 Tauri 壳）——后者在 Linux 需 webview/glib 等
+      # 系统库，完整打包交给 release 流程。core+cli+mcp 足以守护扫描/删除逻辑。
+      - name: cargo build (core + cli + mcp)
+        run: cargo build -p dev-sweeper-core -p dev-sweeper-cli -p dev-sweeper-mcp --verbose
+      # sweep-mcp 冒烟：--help 能跑通（真实拉起是 stdio 循环，CI 里不适合长驻）
+      - name: sweep-mcp 冒烟（--help）
+        run: cargo run -p dev-sweeper-mcp --bin sweep-mcp -- --help
 
   frontend-check:
     name: tsc typecheck

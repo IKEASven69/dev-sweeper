@@ -111,8 +111,37 @@ impl ServerHandler for SweepServer {
     }
 }
 
+/// `--help` / `--version`：供 CI 冒烟与人工检查；默认（无参数）启动 stdio server。
+/// 不引入 clap——服务器本来不接命令行参数，10 行手写足够。
+fn handle_cli_flags() -> Option<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "sweep-mcp {}\ndeveloper 产物清理工具 dev-sweeper 的 MCP server（stdio 传输）。\n\
+             \n\
+             用法：由 MCP 客户端（Claude Desktop / Cursor 等）作为 stdio server 拉起，\n\
+             不需要命令行参数。人工测试：\n\
+             \x20 echo '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{...}}}}' | sweep-mcp\n\
+             \n\
+             工具：scan / clean / deps / caches / caches_purge / archives_discover\n\
+             安全：删除一律移入回收站；clean 与 caches_purge 真实执行需\n\
+             \x20 dry_run=false 且 confirm=true 双开关，缺一即拒绝。",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Some(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("sweep-mcp {}", env!("CARGO_PKG_VERSION"));
+        return Some(());
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if handle_cli_flags().is_some() {
+        return Ok(());
+    }
     let service = SweepServer.serve(stdio()).await.inspect_err(|e| {
         eprintln!("sweep-mcp: 启动失败: {e}");
     })?;
