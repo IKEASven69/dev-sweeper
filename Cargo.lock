@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "dev-sweeper"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dev-sweeper-core",
  "serde",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "dev-sweeper-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "comfy-table",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "dev-sweeper-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "flate2",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "dev-sweeper-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dev-sweeper-core",
  "rmcp",

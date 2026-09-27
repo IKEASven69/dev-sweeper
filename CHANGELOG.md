@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-25
+
+agent 时代版：任何编码 agent 都能安全地调用 dev-sweeper。
+
+### 新增
+- **MCP server（sweep-mcp）**：官方 Rust SDK（rmcp）实现的 stdio MCP 服务，暴露 scan / clean / deps / caches / caches_purge / archives_discover 六个工具；破坏性操作强制 `dry_run=false 且 confirm=true` 双开关，缺一拒绝并把原因返回给 agent。README 附 Claude Desktop 与通用 MCP 客户端配置示例
+- **llms.txt**：给 agent 的项目说明——安全模型硬约束、CLI 速查（含 --json）、MCP 接入与推荐流程
+- **GUI 中英双语**：全量 i18n 迁移（react-i18next），系统语言检测 + 顶栏即时切换；zh/en key 一致性进 CI
+- **CLI --json 补全**：migrate / uv-migrate / archives / archive / restore 全部支持结构化 JSON 输出（dry-run 同样），退出码语义不变
+
+### 改进
+- CI 测试范围扩到全 workspace（core + cli + mcp），sweep-mcp 加 --help 冒烟步骤
+
 ## [0.3.0] — 2026-09-24
 
 可取消性与实时反馈版：所有长任务不再只能干等。

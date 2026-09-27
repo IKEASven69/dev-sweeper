@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"sweep-mcp","version":"0.3.0"},"instructions":"dev-sweeper MCP：扫描/清理开发产物（node_modules、target、venv 等）。\n安全模型：删除一律移入回收站（可恢复）；产物识别需规则名+项目标记双重确认；\nclean 与 caches_purge 真实执行必须 dry_run=false 且 confirm=true 双开关，\n缺一即拒绝。建议流程：scan/caches 查看清单 → 预演 → 确认后真实执行。"}}
