@@ -147,8 +147,13 @@ jobs:
         shell: bash
         run: echo "tag=v$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
+      # 用官方 gh 只上传资产（--clobber 覆盖同名），不做 release 的 PATCH 更新——
+      # softprops action 上传前会先 update release，v0.4.0 曾报
+      # "Resource not accessible by integration" 导致 win/mac CLI 资产丢失
       - name: upload CLI asset to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          files: sweep-*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        shell: bash
+        run: gh release upload "$TAG" sweep-* --repo "$REPO" --clobber
