@@ -96,6 +96,9 @@ enum Cmd {
         /// 跳过确认
         #[arg(long, short = 'y')]
         yes: bool,
+        /// 以 JSON 输出（供脚本用；提示与子进程输出转至 stderr）
+        #[arg(long)]
+        json: bool,
     },
     /// 把 pip/poetry/pip-tools 项目迁移到 uv（全局内容寻址缓存 + 硬链接 venv，跨项目去重以省磁盘）
     UvMigrate {
@@ -106,6 +109,9 @@ enum Cmd {
         /// 跳过确认
         #[arg(long, short = 'y')]
         yes: bool,
+        /// 以 JSON 输出（供脚本用；提示与子进程输出转至 stderr）
+        #[arg(long)]
+        json: bool,
     },
     /// 扫描并清理各语言的全局依赖缓存（npm/pip/cargo/maven/gradle/go/uv/pnpm 等）
     Caches {
@@ -152,6 +158,9 @@ enum Cmd {
         /// 排除（保护）路径前缀，逗号分隔，可多次。命中时拒绝归档
         #[arg(long, value_delimiter = ',')]
         exclude: Vec<String>,
+        /// 以 JSON 输出（供脚本用；预演同样输出 JSON）
+        #[arg(long)]
+        json: bool,
     },
     /// 从归档解回项目
     Restore {
@@ -163,6 +172,9 @@ enum Cmd {
         /// 预演：只校验不写
         #[arg(long, short = 'n')]
         dry_run: bool,
+        /// 以 JSON 输出（供脚本用；预演同样输出 JSON）
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -305,10 +317,22 @@ fn main() {
                 }
             }
         }
-        Cmd::Migrate { path, dry_run, yes } => {
+        Cmd::Migrate { path, dry_run, yes, json } => {
             let from = match dev_sweeper_core::detect_pm(&path) {
                 PmKind::Pnpm => {
-                    println!("项目已是 pnpm 管理（pnpm-lock.yaml 存在），无需迁移。");
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "fromPm": "pnpm",
+                                "toPm": "pnpm",
+                                "executed": false,
+                                "note": "项目已是 pnpm 管理（pnpm-lock.yaml 存在），无需迁移。",
+                            })
+                        );
+                    } else {
+                        println!("项目已是 pnpm 管理（pnpm-lock.yaml 存在），无需迁移。");
+                    }
                     return;
                 }
                 PmKind::Unknown => {
@@ -323,22 +347,58 @@ fn main() {
                 _ => "unknown",
             };
             if dry_run {
-                println!("[dry-run] 会将 {pm_name} 项目迁移到 pnpm：");
-                println!("  · 旧 node_modules 与旧锁文件移入回收站（可恢复）");
-                println!("  · 运行 `pnpm import` + `pnpm install` 重建依赖");
-                println!("[dry-run] 实际未执行任何修改。");
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "dryRun": true,
+                            "fromPm": pm_name,
+                            "toPm": "pnpm",
+                            "steps": [
+                                "旧 node_modules 与旧锁文件移入回收站（可恢复）",
+                                "运行 `pnpm import` + `pnpm install` 重建依赖",
+                            ],
+                            "executed": false,
+                        })
+                    );
+                } else {
+                    println!("[dry-run] 会将 {pm_name} 项目迁移到 pnpm：");
+                    println!("  · 旧 node_modules 与旧锁文件移入回收站（可恢复）");
+                    println!("  · 运行 `pnpm import` + `pnpm install` 重建依赖");
+                    println!("[dry-run] 实际未执行任何修改。");
+                }
                 return;
             }
-            println!("将把 {pm_name} 项目迁移到 pnpm：旧 node_modules 移入回收站后立即重建（可恢复）。");
-            if !yes && !confirm(1) {
-                println!("已取消。");
+            if json {
+                eprintln!("将把 {pm_name} 项目迁移到 pnpm：旧 node_modules 移入回收站后立即重建（可恢复）。");
+            } else {
+                println!("将把 {pm_name} 项目迁移到 pnpm：旧 node_modules 移入回收站后立即重建（可恢复）。");
+            }
+            if !yes && !confirm_at(1, json) {
+                if json {
+                    eprintln!("已取消。");
+                } else {
+                    println!("已取消。");
+                }
                 return;
             }
             match migrate_to_pnpm(&path, false, &never_cancel(), |line| {
-                // 子进程输出改为 piped 捕获，CLI 里直接打印保持原有"实时可见"体验
-                println!("{line}");
+                // 子进程输出改为 piped 捕获，CLI 里直接打印保持原有"实时可见"体验；
+                // --json 时转 stderr，stdout 只留最终 JSON
+                if json {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
+                }
             }) {
                 Ok(rep) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                        if !rep.reinstalled {
+                            std::process::exit(1);
+                        }
+                        return;
+                    }
                     if !rep.reinstalled {
                         eprintln!(
                             "迁移未完成（安装步骤失败）：{}",
@@ -360,10 +420,22 @@ fn main() {
                 }
             }
         }
-        Cmd::UvMigrate { path, dry_run, yes } => {
+        Cmd::UvMigrate { path, dry_run, yes, json } => {
             let from = match detect_pypm(&path) {
                 PyPmKind::Uv => {
-                    println!("项目已是 uv 管理（uv.lock 存在），无需迁移。");
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "fromPm": "uv",
+                                "toPm": "uv",
+                                "executed": false,
+                                "note": "项目已是 uv 管理（uv.lock 存在），无需迁移。",
+                            })
+                        );
+                    } else {
+                        println!("项目已是 uv 管理（uv.lock 存在），无需迁移。");
+                    }
                     return;
                 }
                 PyPmKind::Unknown => {
@@ -381,21 +453,56 @@ fn main() {
                 _ => "unknown",
             };
             if dry_run {
-                println!("[dry-run] 会将 {pm_name} 项目迁移到 uv：");
-                println!("  · 旧 .venv 移入回收站（可恢复）");
-                println!("  · 运行 `uv venv` + 按清单安装（pyproject→uv sync / requirements→uv pip install）");
-                println!("[dry-run] 实际未执行任何修改。");
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "dryRun": true,
+                            "fromPm": pm_name,
+                            "toPm": "uv",
+                            "steps": [
+                                "旧 .venv 移入回收站（可恢复）",
+                                "运行 `uv venv` + 按清单安装（pyproject→uv sync / requirements→uv pip install）",
+                            ],
+                            "executed": false,
+                        })
+                    );
+                } else {
+                    println!("[dry-run] 会将 {pm_name} 项目迁移到 uv：");
+                    println!("  · 旧 .venv 移入回收站（可恢复）");
+                    println!("  · 运行 `uv venv` + 按清单安装（pyproject→uv sync / requirements→uv pip install）");
+                    println!("[dry-run] 实际未执行任何修改。");
+                }
                 return;
             }
-            println!("将把 {pm_name} 项目迁移到 uv：旧 .venv 移入回收站后立即重建（可恢复）。");
-            if !yes && !confirm(1) {
-                println!("已取消。");
+            if json {
+                eprintln!("将把 {pm_name} 项目迁移到 uv：旧 .venv 移入回收站后立即重建（可恢复）。");
+            } else {
+                println!("将把 {pm_name} 项目迁移到 uv：旧 .venv 移入回收站后立即重建（可恢复）。");
+            }
+            if !yes && !confirm_at(1, json) {
+                if json {
+                    eprintln!("已取消。");
+                } else {
+                    println!("已取消。");
+                }
                 return;
             }
             match migrate_to_uv(&path, false, &never_cancel(), |line| {
-                println!("{line}");
+                if json {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
+                }
             }) {
                 Ok(rep) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                        if !rep.reinstalled {
+                            std::process::exit(1);
+                        }
+                        return;
+                    }
                     if !rep.reinstalled {
                         eprintln!(
                             "迁移未完成（安装步骤失败）：{}",
@@ -525,16 +632,23 @@ fn main() {
             dry_run,
             yes,
             exclude,
+            json,
         } => {
             let dir = archive_dir
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(default_archive_dir);
             if dry_run {
                 match archive_project(Path::new(&path), Path::new(&dir), true, &exclude) {
-                    Ok(r) => println!(
-                        "[dry-run] 会将 {} 压缩为 {}，原项目移入回收站（释放 {}），实际未执行。",
-                        r.source_path, r.archive_file, fmt_size(r.original_size)
-                    ),
+                    Ok(r) => {
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                        } else {
+                            println!(
+                                "[dry-run] 会将 {} 压缩为 {}，原项目移入回收站（释放 {}），实际未执行。",
+                                r.source_path, r.archive_file, fmt_size(r.original_size)
+                            );
+                        }
+                    }
                     Err(e) => {
                         eprintln!("错误: {e}");
                         std::process::exit(1);
@@ -542,17 +656,33 @@ fn main() {
                 }
                 return;
             }
-            println!(
-                "将把 {} 压缩为 {}/<name>@<日期>.tar.gz，原项目移入回收站（可恢复）。",
-                path.display(),
-                dir
-            );
-            if !yes && !confirm(1) {
-                println!("已取消。");
+            if json {
+                eprintln!(
+                    "将把 {} 压缩为 {}/<name>@<日期>.tar.gz，原项目移入回收站（可恢复）。",
+                    path.display(),
+                    dir
+                );
+            } else {
+                println!(
+                    "将把 {} 压缩为 {}/<name>@<日期>.tar.gz，原项目移入回收站（可恢复）。",
+                    path.display(),
+                    dir
+                );
+            }
+            if !yes && !confirm_at(1, json) {
+                if json {
+                    eprintln!("已取消。");
+                } else {
+                    println!("已取消。");
+                }
                 return;
             }
             match archive_project(Path::new(&path), Path::new(&dir), false, &exclude) {
                 Ok(r) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                        return;
+                    }
                     if r.removed_original {
                         println!(
                             "\n已归档 {}：原始 {} → 压缩 {}，原项目已移入回收站（{}）。",
@@ -584,13 +714,20 @@ fn main() {
             path,
             dest,
             dry_run,
+            json,
         } => {
             if dry_run {
                 match restore_archive(Path::new(&path), Path::new(&dest), true) {
-                    Ok(r) => println!(
-                        "[dry-run] 会将 {} 解回到 {}，实际未写入。",
-                        r.archive_file, r.restored_to
-                    ),
+                    Ok(r) => {
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                        } else {
+                            println!(
+                                "[dry-run] 会将 {} 解回到 {}，实际未写入。",
+                                r.archive_file, r.restored_to
+                            );
+                        }
+                    }
                     Err(e) => {
                         eprintln!("错误: {e}");
                         std::process::exit(1);
@@ -599,12 +736,18 @@ fn main() {
                 return;
             }
             match restore_archive(Path::new(&path), Path::new(&dest), false) {
-                Ok(r) => println!(
-                    "\n已解回 {} → {}（{}），原归档保留。",
-                    r.archive_file,
-                    r.restored_to,
-                    fmt_size(r.restored_bytes)
-                ),
+                Ok(r) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                    } else {
+                        println!(
+                            "\n已解回 {} → {}（{}），原归档保留。",
+                            r.archive_file,
+                            r.restored_to,
+                            fmt_size(r.restored_bytes)
+                        );
+                    }
+                }
                 Err(e) => {
                     eprintln!("还原失败: {e}");
                     std::process::exit(1);
@@ -815,7 +958,17 @@ fn print_table(artifacts: &[Artifact]) {
 }
 
 fn confirm(count: usize) -> bool {
-    print!("将把 {count} 个目录移入回收站（可恢复），确认? [y/N] ");
+    confirm_at(count, false)
+}
+
+/// `to_stderr = true` 时确认提示走 stderr（--json 模式下 stdout 只放 JSON 文档）。
+fn confirm_at(count: usize, to_stderr: bool) -> bool {
+    let prompt = format!("将把 {count} 个目录移入回收站（可恢复），确认? [y/N] ");
+    if to_stderr {
+        eprint!("{prompt}");
+    } else {
+        print!("{prompt}");
+    }
     std::io::stdout().flush().unwrap();
     let mut line = String::new();
     std::io::stdin().read_line(&mut line).unwrap_or(0);
